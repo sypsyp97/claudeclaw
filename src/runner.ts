@@ -50,6 +50,14 @@ function hasModelConfig(value: ModelConfig): boolean {
   return value.model.trim().length > 0 || value.api.trim().length > 0;
 }
 
+function isNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  if (code === "ENOENT") return true;
+  const message = String((error as { message?: unknown }).message ?? "");
+  return /enoent|no such file or directory/i.test(message);
+}
+
 function buildChildEnv(baseEnv: Record<string, string>, model: string, api: string): Record<string, string> {
   const childEnv: Record<string, string> = { ...baseEnv };
   const normalizedModel = model.trim().toLowerCase();
@@ -206,8 +214,10 @@ export async function loadHeartbeatPromptTemplate(): Promise<string> {
     try {
       const content = await Bun.file(file).text();
       if (content.trim()) return content.trim();
-    } catch {
-      // file doesn't exist or unreadable — try next
+    } catch (e) {
+      if (!isNotFoundError(e)) {
+        console.warn(`[${new Date().toLocaleTimeString()}] Failed to read heartbeat prompt file ${file}:`, e);
+      }
     }
   }
   return "";
