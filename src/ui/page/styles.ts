@@ -1163,7 +1163,9 @@ export const pageStyles = String.raw`    :root {
       display: flex;
       flex-direction: column;
       gap: 4px;
-      max-width: 88%;
+      width: fit-content;
+      min-width: min(280px, 88%);
+      max-width: min(88%, 720px);
       animation: rise 200ms ease-out both;
     }
     .chat-msg-user {
@@ -1183,6 +1185,8 @@ export const pageStyles = String.raw`    :root {
       padding: 0 4px;
     }
     .chat-msg-text {
+      width: 100%;
+      box-sizing: border-box;
       padding: 10px 14px;
       border-radius: 14px;
       font-family: "JetBrains Mono", monospace;
