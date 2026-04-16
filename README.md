@@ -20,7 +20,7 @@ Claude Hermes turns your Claude Code into a personal assistant that never sleeps
 Easiest path — install from the Claude Code plugin marketplace. Inside any Claude Code session, run:
 
 ```
-/plugin marketplace add sypsyp97/claudeclaw
+/plugin marketplace add sypsyp97/claude-hermes
 /plugin install claude-hermes@claude-hermes
 /claude-hermes:start
 ```
@@ -32,7 +32,7 @@ If you previously ran the upstream Claw daemon in this workspace, the first `sta
 ### Develop from source
 
 ```bash
-git clone https://github.com/sypsyp97/claudeclaw.git claude-hermes
+git clone https://github.com/sypsyp97/claude-hermes.git
 cd claude-hermes
 bun install
 bun run verify
