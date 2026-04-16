@@ -58,6 +58,7 @@ const DEFAULT_SETTINGS: Settings = {
   security: { level: "moderate", allowedTools: [], disallowedTools: [], bypassPermissions: false },
   stt: { baseUrl: "", model: "" },
   plugins: { preflightOnStart: false },
+  logging: { includeBodies: false },
 };
 
 export interface HeartbeatExcludeWindow {
@@ -118,6 +119,21 @@ export interface Settings {
   security: SecurityConfig;
   stt: SttConfig;
   plugins: PluginsConfig;
+  logging: LoggingConfig;
+}
+
+export interface LoggingConfig {
+  /**
+   * If true, runner logs include the full prompt, stdout, and stderr of every
+   * Claude invocation. If false (default), only metadata is persisted: name,
+   * timestamp, session id, model, exit code, and byte counts. This affects
+   * only `.claude/hermes/logs/*.log`; on-disk state files are unaffected.
+   *
+   * Default false because those logs can contain third-party message content
+   * (DMs, private channel text, STT transcripts) and long-lived credentials
+   * passed through prompts.
+   */
+  includeBodies: boolean;
 }
 
 export interface PluginsConfig {
@@ -288,6 +304,9 @@ function parseSettings(raw: Record<string, any>, discordUserIdsRaw: string[] = [
     },
     plugins: {
       preflightOnStart: raw.plugins?.preflightOnStart === true,
+    },
+    logging: {
+      includeBodies: raw.logging?.includeBodies === true,
     },
   };
 }

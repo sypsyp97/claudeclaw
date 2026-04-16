@@ -126,10 +126,10 @@ describe("runner happy path", () => {
     expect(after?.turnCount).toBe(1); // resume increments
   });
 
-  test("writes a per-run log file under .claude/hermes/logs/", async () => {
+  test("default: writes a metadata-only per-run log file (no body leak)", async () => {
     process.env.HERMES_FAKE_REPLY = "logged-output";
     const before = readdirSync(join(tmpProj, ".claude", "hermes", "logs")).length;
-    const result = await runner.run("logwrite", "hi");
+    const result = await runner.run("logwrite", "secret-prompt");
     expect(result.exitCode).toBe(0);
 
     const files = readdirSync(join(tmpProj, ".claude", "hermes", "logs"));
@@ -137,9 +137,41 @@ describe("runner happy path", () => {
     const newFile = files.find((f) => f.startsWith("logwrite-"));
     expect(newFile).toBeDefined();
     const contents = await readFile(join(tmpProj, ".claude", "hermes", "logs", newFile!), "utf8");
+    // Header metadata still present...
     expect(contents).toContain("# logwrite");
     expect(contents).toContain("Exit code: 0");
-    expect(contents).toContain("logged-output");
+    // ...but the prompt and stdout bodies are redacted by default.
+    expect(contents).not.toContain("secret-prompt");
+    expect(contents).not.toContain("logged-output");
+    expect(contents).toContain("bodies redacted");
+  });
+
+  test("logging.includeBodies=true: prompt + stdout land in the log file", async () => {
+    process.env.HERMES_FAKE_REPLY = "optin-output";
+    // Flip the setting on disk, then reload so parseSettings picks it up.
+    const settingsPath = join(tmpProj, ".claude", "hermes", "settings.json");
+    const raw = JSON.parse(await readFile(settingsPath, "utf8"));
+    raw.logging = { includeBodies: true };
+    await Bun.write(settingsPath, JSON.stringify(raw, null, 2) + "\n");
+    const config = await import("./config");
+    await config.reloadSettings();
+
+    try {
+      const result = await runner.run("logbodies", "optin-prompt");
+      expect(result.exitCode).toBe(0);
+
+      const files = readdirSync(join(tmpProj, ".claude", "hermes", "logs"));
+      const newFile = files.find((f) => f.startsWith("logbodies-"));
+      expect(newFile).toBeDefined();
+      const contents = await readFile(join(tmpProj, ".claude", "hermes", "logs", newFile!), "utf8");
+      expect(contents).toContain("optin-prompt");
+      expect(contents).toContain("optin-output");
+    } finally {
+      // Revert settings on disk + in cache so subsequent tests see defaults.
+      delete raw.logging;
+      await Bun.write(settingsPath, JSON.stringify(raw, null, 2) + "\n");
+      await config.reloadSettings();
+    }
   });
 
   test("returns a structured RunResult with stdout, stderr, exitCode", async () => {

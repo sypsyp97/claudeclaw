@@ -76,12 +76,30 @@ function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
   if (threadId) {
     const current = threadQueues.get(threadId) ?? Promise.resolve();
     const task = current.then(fn, fn);
-    threadQueues.set(threadId, task.catch(() => {}));
+    const tracked = task.catch(() => {});
+    threadQueues.set(threadId, tracked);
+    // Once this task settles, drop the entry if it is still the tail of the
+    // queue. Otherwise a newer task has already landed and owns the slot.
+    void tracked.finally(() => {
+      if (threadQueues.get(threadId) === tracked) {
+        threadQueues.delete(threadId);
+      }
+    });
     return task;
   }
   const task = globalQueue.then(fn, fn);
   globalQueue = task.catch(() => {});
   return task;
+}
+
+/** Test-only: number of thread queue slots currently held. */
+export function _threadQueueSize(): number {
+  return threadQueues.size;
+}
+
+/** Test-only: direct enqueue so we can assert cleanup without spawning Claude. */
+export function _enqueueForTest<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
+  return enqueue(fn, threadId);
 }
 
 function extractRateLimitMessage(stdout: string, stderr: string): string | null {
@@ -702,19 +720,31 @@ async function execClaude(
     exitCode,
   };
 
-  const output = [
+  const includeBodies = settings.logging?.includeBodies === true;
+  const headerLines = [
     `# ${name}`,
     `Date: ${new Date().toISOString()}`,
     `Session: ${sessionId} (${isNew ? "new" : "resumed"})`,
     `Model config: ${usedFallback ? "fallback" : "primary"}`,
     ...(agentic.enabled ? [`Task type: ${taskType}`, `Routing: ${routingReasoning}`] : []),
-    `Prompt: ${prompt}`,
     `Exit code: ${result.exitCode}`,
-    "",
-    "## Output",
-    stdout,
-    ...(stderr ? ["## Stderr", stderr] : []),
-  ].join("\n");
+    `Prompt bytes: ${Buffer.byteLength(prompt, "utf8")}`,
+    `Stdout bytes: ${Buffer.byteLength(stdout, "utf8")}`,
+    `Stderr bytes: ${Buffer.byteLength(stderr, "utf8")}`,
+  ];
+  const bodyLines = includeBodies
+    ? [
+        `Prompt: ${prompt}`,
+        "",
+        "## Output",
+        stdout,
+        ...(stderr ? ["## Stderr", stderr] : []),
+      ]
+    : [
+        "",
+        "(bodies redacted; set logging.includeBodies=true in settings.json to capture prompt/stdout/stderr)",
+      ];
+  const output = [...headerLines, ...bodyLines].join("\n");
 
   await Bun.write(logFile, output);
   console.log(`[${new Date().toLocaleTimeString()}] Done: ${name} → ${logFile}`);
