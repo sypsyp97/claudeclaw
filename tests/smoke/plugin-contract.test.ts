@@ -113,7 +113,7 @@ describe("plugin install-time contract", () => {
       "## Test conventions",
       "## Hard rules",
       "## Where things live",
-      "## Self-evolution loop",
+      "## Maintenance discipline",
     ];
     const missing = requiredSections.filter((s) => !text.includes(s));
     expect(missing).toEqual([]);

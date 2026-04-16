@@ -73,19 +73,30 @@ the human log.
 - `scripts/verify.ts` — the harness; emits structured JSON
 - `commands/*.md` — Claude Code slash command definitions for end users
 
-## Self-evolution loop
+## Maintenance discipline (the "evolve" framework)
 
-The 8-hour cron in `.github/workflows/evolve.yml` runs `scripts/evolve.ts`
-which:
-1. Reads pending tasks from `.claude/hermes/inbox/evolve/*.md` + GitHub issues
-   tagged `hermes-input`
-2. Asks Claude to pick one and propose a small change
-3. Applies the change in a tmp worktree
-4. Runs full verify
-5. On green: commits + pushes. On red: reverts and journals the failure.
+`bun run scripts/evolve.ts "<task body>"` (or pipe the body on stdin) runs
+**one** maintenance iteration locally:
 
-If you're an evolve agent, treat this as your contract: small, verify-gated,
-revertible. Do not bundle multiple changes; one commit, one verify.
+1. Takes the task body you handed it — no file inbox, no GitHub issue
+   scraper. Hermes already talks to you directly (Discord/Telegram/terminal);
+   whoever has the user's intent just hands it in.
+2. Spawns Claude (your local logged-in CLI) with a self-edit prompt.
+3. Runs full `bun run verify`.
+4. **On green:** commits with a structured message + writes a journal entry.
+   **On red:** reverts the working tree + writes the failure to the journal.
+
+This is **opt-in and human-triggered**. There is intentionally no background
+cron (no `.github/workflows/evolve.yml`, no daemon job). You — or another
+agent at your direction — invoke it when you want a task moved forward.
+
+If you ARE that agent, the contract is the same as the framework's:
+- One task per iteration. Don't bundle.
+- Don't suppress verify. Don't `--no-verify`. Don't disable a failing test.
+- The journal at `.claude/hermes/memory/journal/<date>.md` is your audit
+  trail — readers (humans or future you) reconstruct what happened from it.
+- If three consecutive iterations on the same task revert, escalate to a
+  human before retrying.
 
 ## When you get stuck
 

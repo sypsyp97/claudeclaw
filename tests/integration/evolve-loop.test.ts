@@ -3,14 +3,13 @@ import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMigrations, closeDb, eventsRepo, openDb, type Database } from "../../src/state";
-import { evolveOnce, pickNext, fromGitHubIssues, type PendingTask } from "../../src/evolve";
+import { evolveOnce, type EvolveTask } from "../../src/evolve";
 
 let tempRoot: string;
 let db: Database;
 
 beforeAll(async () => {
   tempRoot = await fs.mkdtemp(join(tmpdir(), "hermes-evolve-"));
-  await fs.mkdir(join(tempRoot, ".claude", "hermes", "inbox", "evolve"), { recursive: true });
   db = openDb({ path: ":memory:" });
   await applyMigrations(db);
 });
@@ -20,54 +19,19 @@ afterAll(async () => {
   await fs.rm(tempRoot, { recursive: true, force: true });
 });
 
-async function writeInboxTask(id: string, body: string): Promise<void> {
-  const path = join(tempRoot, ".claude", "hermes", "inbox", "evolve", `${id}.md`);
-  await fs.writeFile(path, body, "utf8");
+function task(overrides: Partial<EvolveTask> = {}): EvolveTask {
+  return {
+    id: "t-1",
+    title: "demo task",
+    body: "do something small",
+    ...overrides,
+  };
 }
-
-describe("planner", () => {
-  test("highest votes wins, downvoted tasks skipped", () => {
-    const tasks: PendingTask[] = [
-      { id: "a", source: "local", title: "a", body: "", votes: 2, createdAt: "2026-04-16T00:00:00Z" },
-      { id: "b", source: "local", title: "b", body: "", votes: 5, createdAt: "2026-04-15T00:00:00Z" },
-      { id: "c", source: "local", title: "c", body: "", votes: -1, createdAt: "2026-04-14T00:00:00Z" },
-    ];
-    expect(pickNext(tasks)?.id).toBe("b");
-  });
-});
-
-describe("github adapter", () => {
-  test("filters by label and uses vote math", () => {
-    const tasks = fromGitHubIssues(
-      [
-        {
-          id: 1,
-          title: "fix X",
-          labels: [{ name: "hermes-input" }],
-          reactions: { "+1": 10, "-1": 2 },
-          created_at: "2026-04-16T00:00:00Z",
-        },
-        {
-          id: 2,
-          title: "unrelated",
-          labels: [{ name: "bug" }],
-          reactions: { "+1": 99 },
-          created_at: "2026-04-16T00:00:00Z",
-        },
-      ],
-      "hermes-input"
-    );
-    expect(tasks.length).toBe(1);
-    expect(tasks[0]?.votes).toBe(8);
-  });
-});
 
 describe("evolveOnce — fake executor", () => {
   test("commits when exec + verify are green", async () => {
-    await writeInboxTask("green-task", "---\nvotes: 3\nsource: local\n---\n# green task\nbody here\n");
-
     let committed = false;
-    const result = await evolveOnce(db, tempRoot, {
+    const result = await evolveOnce(db, task({ id: "green-task", title: "green task" }), tempRoot, {
       runExec: async () => ({ ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
       gate: {
         runVerify: async () => ({ ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
@@ -84,15 +48,15 @@ describe("evolveOnce — fake executor", () => {
     });
 
     expect(result.outcome).toBe("committed");
+    expect(result.task.id).toBe("green-task");
     expect(committed).toBe(true);
     expect(result.sha).toBe("deadbeefcafe");
   });
 
   test("reverts when verify is red", async () => {
-    await writeInboxTask("red-task", "---\nvotes: 1\n---\n# red\n");
     let reverted = 0;
 
-    const result = await evolveOnce(db, tempRoot, {
+    const result = await evolveOnce(db, task({ id: "red-task", title: "red task" }), tempRoot, {
       runExec: async () => ({ ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
       gate: {
         runVerify: async () => ({
@@ -116,13 +80,26 @@ describe("evolveOnce — fake executor", () => {
     expect(revertEvents.length).toBeGreaterThanOrEqual(1);
   });
 
-  test("no-tasks outcome when inbox is empty", async () => {
-    const emptyRoot = await fs.mkdtemp(join(tmpdir(), "hermes-evolve-empty-"));
-    try {
-      const result = await evolveOnce(db, emptyRoot);
-      expect(result.outcome).toBe("no-tasks");
-    } finally {
-      await fs.rm(emptyRoot, { recursive: true, force: true });
-    }
+  test("exec failure reverts changes and skips verify", async () => {
+    let verifyCalled = false;
+    let reverted = 0;
+
+    const result = await evolveOnce(db, task({ id: "exec-blows", title: "exec blows up" }), tempRoot, {
+      runExec: async () => ({ ok: false, exitCode: 7, stdout: "", stderr: "boom", durationMs: 1 }),
+      gate: {
+        runVerify: async () => {
+          verifyCalled = true;
+          return { ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 };
+        },
+        runGit: async (_cwd, args) => {
+          if (args[0] === "restore" || args[0] === "clean") reverted++;
+          return { ok: true, stdout: "", stderr: "" };
+        },
+      },
+    });
+
+    expect(result.outcome).toBe("exec-failed");
+    expect(verifyCalled).toBe(false);
+    expect(reverted).toBeGreaterThan(0);
   });
 });

@@ -50,7 +50,7 @@ Then point Claude Code at the working tree:
 ### Automation
 - **Heartbeat:** periodic check-ins with configurable intervals, quiet hours, and editable prompts.
 - **Cron jobs:** timezone-aware schedules for repeating or one-time tasks.
-- **Self-evolution:** an 8h GitHub Actions cron reads its own source, asks Claude for one small improvement, runs the full verify pipeline, and commits on green / reverts on red.
+- **Maintenance discipline (`bun run scripts/evolve.ts`):** opt-in local tool that takes a task body directly (CLI arg or stdin), asks your local Claude to implement it, runs the full verify pipeline, and commits on green / reverts on red. The same small-step / verify-gated / journal-everything discipline you'd want any agent (or yourself) to follow when touching this codebase. Not a background daemon — you tell Hermes what to do via Discord/Telegram/terminal, and the verify gate is the safety net.
 
 ### Communication
 - **Telegram:** text, image, and voice (whisper.cpp or any OpenAI-compatible STT endpoint).
