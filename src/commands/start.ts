@@ -424,6 +424,10 @@ export async function start(args: string[] = []) {
   }
 
   function startPreflightInBackground(projectPath: string): void {
+    if (process.env.HERMES_SKIP_PREFLIGHT === "1") {
+      console.log(`[${ts()}] Plugin preflight skipped (HERMES_SKIP_PREFLIGHT=1)`);
+      return;
+    }
     try {
       const proc = Bun.spawn([process.execPath, "run", PREFLIGHT_SCRIPT, projectPath], {
         stdin: "ignore",

@@ -3,23 +3,19 @@ import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMigrations, closeDb, type Database, openDb, skillsRepo } from "../state";
+import * as reg from "./registry";
 
-// The learning registry wraps discovery with DB-backed status gating. Discovery
-// pulls from homedir()+cwd at call time, so we stub HOME/USERPROFILE and chdir
-// into a fake project, then import the module so it picks up our fakes.
-const ORIG_HOME = process.env.HOME;
-const ORIG_USERPROFILE = process.env.USERPROFILE;
-const ORIG_CWD = process.cwd();
-
+// listActiveSkills/listCandidateSkills both accept a `roots` arg so the test
+// drives discovery with explicit cwd + home, which is OS-agnostic. The earlier
+// env-based stubs failed on Linux because Bun's homedir() doesn't always honour
+// $HOME.
 let tempRoot: string;
 let fakeHome: string;
 let fakeProject: string;
 let globalSkillsDir: string;
 let projectSkillsDir: string;
 let db: Database;
-
-type LearningRegistry = typeof import("./registry");
-let reg: LearningRegistry;
+let roots: { cwd: string; home: string };
 
 beforeAll(async () => {
   tempRoot = await fs.mkdtemp(join(tmpdir(), "hermes-learn-reg-"));
@@ -29,23 +25,14 @@ beforeAll(async () => {
   projectSkillsDir = join(fakeProject, ".claude", "skills");
   await fs.mkdir(globalSkillsDir, { recursive: true });
   await fs.mkdir(projectSkillsDir, { recursive: true });
+  roots = { cwd: fakeProject, home: fakeHome };
 
-  process.env.HOME = fakeHome;
-  process.env.USERPROFILE = fakeHome;
-  process.chdir(fakeProject);
-
-  reg = await import("./registry");
   db = openDb({ path: ":memory:" });
   await applyMigrations(db);
 });
 
 afterAll(async () => {
   closeDb(db);
-  process.chdir(ORIG_CWD);
-  if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
-  else delete process.env.HOME;
-  if (ORIG_USERPROFILE !== undefined) process.env.USERPROFILE = ORIG_USERPROFILE;
-  else delete process.env.USERPROFILE;
   await fs.rm(tempRoot, { recursive: true, force: true });
 });
 
@@ -70,7 +57,7 @@ beforeEach(async () => {
 describe("listActiveSkills", () => {
   test("returns empty array when no skills are active in DB", async () => {
     await writeSkill(globalSkillsDir, "fs-only", "---\ndescription: x\n---\n");
-    const active = await reg.listActiveSkills(db);
+    const active = await reg.listActiveSkills(db, roots);
     expect(active).toEqual([]);
   });
 
@@ -83,7 +70,7 @@ describe("listActiveSkills", () => {
     skillsRepo.upsertSkill(db, { name: "beta", path: "/tmp/b", status: "shadow" });
     // gamma has no DB row
 
-    const active = await reg.listActiveSkills(db);
+    const active = await reg.listActiveSkills(db, roots);
     const names = active.map((s) => s.name).sort();
     expect(names).toEqual(["alpha"]);
   });
@@ -96,7 +83,7 @@ describe("listActiveSkills", () => {
     skillsRepo.upsertSkill(db, { name: "s", path: "/x", status: "shadow" });
     skillsRepo.upsertSkill(db, { name: "d", path: "/x", status: "disabled" });
 
-    const active = await reg.listActiveSkills(db);
+    const active = await reg.listActiveSkills(db, roots);
     expect(active).toEqual([]);
   });
 });
@@ -111,32 +98,32 @@ describe("listCandidateSkills", () => {
     skillsRepo.upsertSkill(db, { name: "shad", path: "/x", status: "shadow" });
     skillsRepo.upsertSkill(db, { name: "act", path: "/x", status: "active" });
 
-    const candidates = await reg.listCandidateSkills(db);
+    const candidates = await reg.listCandidateSkills(db, roots);
     const names = candidates.map((s) => s.name).sort();
     expect(names).toEqual(["cand", "shad"]);
   });
 
   test("returns [] when no skills are in candidate/shadow status", async () => {
     await writeSkill(globalSkillsDir, "a", "---\ndescription: a\n---\n");
-    expect(await reg.listCandidateSkills(db)).toEqual([]);
+    expect(await reg.listCandidateSkills(db, roots)).toEqual([]);
   });
 
   test("skill present in DB but missing on disk is excluded", async () => {
     skillsRepo.upsertSkill(db, { name: "ghost", path: "/tmp/gone", status: "candidate" });
-    expect(await reg.listCandidateSkills(db)).toEqual([]);
+    expect(await reg.listCandidateSkills(db, roots)).toEqual([]);
   });
 });
 
 describe("re-exports", () => {
   test("exposes listSkills from the pure skills module", async () => {
     await writeSkill(globalSkillsDir, "re-export", "---\ndescription: x\n---\n");
-    const all = await reg.listSkills();
+    const all = await reg.listSkills(roots);
     expect(all.map((s) => s.name)).toContain("re-export");
   });
 
   test("exposes resolveSkillPrompt from the pure skills module", async () => {
     await writeSkill(globalSkillsDir, "resolve-me", "BODY");
-    expect(await reg.resolveSkillPrompt("resolve-me")).toBe("BODY");
+    expect(await reg.resolveSkillPrompt("resolve-me", roots)).toBe("BODY");
   });
 
   test("exposes discoverSkills and extractDescription from discovery", () => {

@@ -11,15 +11,18 @@ import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { discoverSkills, type SkillInfo } from "./discovery";
+import { discoverSkills, type DiscoveryRoots, type SkillInfo } from "./discovery";
 
 export type { SkillInfo, SkillSource } from "./discovery";
 
-export async function listSkills(): Promise<SkillInfo[]> {
-  return discoverSkills();
+export async function listSkills(roots?: DiscoveryRoots): Promise<SkillInfo[]> {
+  return discoverSkills(roots);
 }
 
-export async function resolveSkillPrompt(command: string): Promise<string | null> {
+export async function resolveSkillPrompt(
+  command: string,
+  roots?: DiscoveryRoots,
+): Promise<string | null> {
   const name = command.startsWith("/") ? command.slice(1) : command;
   if (!name) return null;
 
@@ -27,8 +30,9 @@ export async function resolveSkillPrompt(command: string): Promise<string | null
   const pluginHint = colonIdx > 0 ? name.slice(0, colonIdx) : null;
   const skillName = colonIdx > 0 ? name.slice(colonIdx + 1) : name;
 
-  const home = homedir();
-  const projectSkillsDir = join(process.cwd(), ".claude", "skills");
+  const home = roots?.home ?? homedir();
+  const cwd = roots?.cwd ?? process.cwd();
+  const projectSkillsDir = join(cwd, ".claude", "skills");
   const globalSkillsDir = join(home, ".claude", "skills");
   const pluginsDir = join(home, ".claude", "plugins");
 

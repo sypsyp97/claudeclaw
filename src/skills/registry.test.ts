@@ -2,23 +2,18 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { listSkills, resolveSkillPrompt } from "./registry";
 
-// registry.ts calls homedir() and process.cwd() internally, so we stub HOME +
-// USERPROFILE and chdir into a fake project. This mirrors the pattern already
-// used in src/skills.test.ts (which covers the barrel export).
-const ORIG_HOME = process.env.HOME;
-const ORIG_USERPROFILE = process.env.USERPROFILE;
-const ORIG_CWD = process.cwd();
-
+// Both functions accept an optional `roots` arg to override cwd/home; we drive
+// them through explicit paths so the tests don't depend on $HOME being honoured
+// by Bun's homedir() (which has surprising behaviour on Linux).
 let tempRoot: string;
 let fakeHome: string;
 let fakeProject: string;
 let globalSkillsDir: string;
 let projectSkillsDir: string;
 let pluginsDir: string;
-
-type RegistryModule = typeof import("./registry");
-let reg: RegistryModule;
+let roots: { cwd: string; home: string };
 
 beforeAll(async () => {
   tempRoot = await fs.mkdtemp(join(tmpdir(), "hermes-reg-"));
@@ -30,20 +25,10 @@ beforeAll(async () => {
   await fs.mkdir(globalSkillsDir, { recursive: true });
   await fs.mkdir(projectSkillsDir, { recursive: true });
   await fs.mkdir(pluginsDir, { recursive: true });
-
-  process.env.HOME = fakeHome;
-  process.env.USERPROFILE = fakeHome;
-  process.chdir(fakeProject);
-
-  reg = await import("./registry");
+  roots = { cwd: fakeProject, home: fakeHome };
 });
 
 afterAll(async () => {
-  process.chdir(ORIG_CWD);
-  if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
-  else delete process.env.HOME;
-  if (ORIG_USERPROFILE !== undefined) process.env.USERPROFILE = ORIG_USERPROFILE;
-  else delete process.env.USERPROFILE;
   await fs.rm(tempRoot, { recursive: true, force: true });
 });
 
@@ -68,14 +53,14 @@ beforeEach(async () => {
 
 describe("listSkills", () => {
   test("returns empty array when nothing is installed", async () => {
-    const skills = await reg.listSkills();
+    const skills = await listSkills(roots);
     expect(skills).toEqual([]);
   });
 
   test("returns discovered skills from project + global", async () => {
     await writeSkill(projectSkillsDir, "proj-only", "---\ndescription: p\n---\n");
     await writeSkill(globalSkillsDir, "glob-only", "---\ndescription: g\n---\n");
-    const skills = await reg.listSkills();
+    const skills = await listSkills(roots);
     const names = skills.map((s) => s.name).sort();
     expect(names).toEqual(["glob-only", "proj-only"]);
   });
@@ -83,35 +68,35 @@ describe("listSkills", () => {
 
 describe("resolveSkillPrompt", () => {
   test("returns null for empty command (just '/')", async () => {
-    expect(await reg.resolveSkillPrompt("/")).toBeNull();
+    expect(await resolveSkillPrompt("/", roots)).toBeNull();
   });
 
   test("returns null when the named skill does not exist anywhere", async () => {
     await writeSkill(globalSkillsDir, "other", "body");
-    expect(await reg.resolveSkillPrompt("ghost")).toBeNull();
+    expect(await resolveSkillPrompt("ghost", roots)).toBeNull();
   });
 
   test("strips a leading slash from the command", async () => {
     await writeSkill(globalSkillsDir, "hi", "hello world");
-    expect(await reg.resolveSkillPrompt("/hi")).toBe("hello world");
+    expect(await resolveSkillPrompt("/hi", roots)).toBe("hello world");
   });
 
   test("project skill takes precedence over global skill with same name", async () => {
     await writeSkill(projectSkillsDir, "shared", "PROJECT CONTENT");
     await writeSkill(globalSkillsDir, "shared", "GLOBAL CONTENT");
-    expect(await reg.resolveSkillPrompt("shared")).toBe("PROJECT CONTENT");
+    expect(await resolveSkillPrompt("shared", roots)).toBe("PROJECT CONTENT");
   });
 
   test("falls back to global when the project lacks the skill", async () => {
     await writeSkill(globalSkillsDir, "only-global", "ONLY GLOBAL");
-    expect(await reg.resolveSkillPrompt("only-global")).toBe("ONLY GLOBAL");
+    expect(await resolveSkillPrompt("only-global", roots)).toBe("ONLY GLOBAL");
   });
 
   test("returns null when the SKILL.md is present but empty/whitespace", async () => {
     await writeSkill(globalSkillsDir, "blank", "");
     await writeSkill(globalSkillsDir, "ws", "   \n  ");
-    expect(await reg.resolveSkillPrompt("blank")).toBeNull();
-    expect(await reg.resolveSkillPrompt("ws")).toBeNull();
+    expect(await resolveSkillPrompt("blank", roots)).toBeNull();
+    expect(await resolveSkillPrompt("ws", roots)).toBeNull();
   });
 
   test("finds a plugin skill under plugins/<marketplace>/skills/<name>/SKILL.md", async () => {
@@ -119,7 +104,7 @@ describe("resolveSkillPrompt", () => {
     await fs.mkdir(pluginSkillDir, { recursive: true });
     await fs.writeFile(join(pluginSkillDir, "SKILL.md"), "PLUGIN BODY");
 
-    expect(await reg.resolveSkillPrompt("plug-skill")).toBe("PLUGIN BODY");
+    expect(await resolveSkillPrompt("plug-skill", roots)).toBe("PLUGIN BODY");
   });
 
   test("respects plugin hint (marketplace:skill) to restrict search", async () => {
@@ -133,7 +118,7 @@ describe("resolveSkillPrompt", () => {
     await fs.mkdir(otherMkt, { recursive: true });
     await fs.writeFile(join(otherMkt, "SKILL.md"), "FROM OTHER");
 
-    expect(await reg.resolveSkillPrompt("want-this:target")).toBe("FROM WANT-THIS");
+    expect(await resolveSkillPrompt("want-this:target", roots)).toBe("FROM WANT-THIS");
   });
 
   test("finds a skill in the plugins cache directory (versioned path)", async () => {
@@ -141,6 +126,6 @@ describe("resolveSkillPrompt", () => {
     await fs.mkdir(cachedSkill, { recursive: true });
     await fs.writeFile(join(cachedSkill, "SKILL.md"), "CACHED BODY");
 
-    expect(await reg.resolveSkillPrompt("cached")).toBe("CACHED BODY");
+    expect(await resolveSkillPrompt("cached", roots)).toBe("CACHED BODY");
   });
 });

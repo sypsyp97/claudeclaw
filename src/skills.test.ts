@@ -2,23 +2,19 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { listSkills, resolveSkillPrompt } from "./skills";
 
-// The skills module computes homedir()/cwd at call time. We isolate by
-// stubbing HOME (POSIX) and USERPROFILE (Windows) so os.homedir() resolves
-// into our temp dir, and chdir into a fake project. The env mutation must
-// happen BEFORE the first dynamic import so the module binds to our stubs.
-const ORIG_HOME = process.env.HOME;
-const ORIG_USERPROFILE = process.env.USERPROFILE;
-const ORIG_CWD = process.cwd();
+// The barrel re-exports `listSkills` / `resolveSkillPrompt` from
+// `src/skills/registry.ts`. Both accept an optional `roots` arg so tests can
+// drive them with explicit cwd + home, which is OS-agnostic — earlier env-based
+// stubs failed on Linux because Bun's homedir() doesn't always honour $HOME.
 
 let tempRoot: string;
 let fakeHome: string;
 let fakeProject: string;
 let globalSkillsDir: string;
 let projectSkillsDir: string;
-
-type SkillsModule = typeof import("./skills");
-let skillsMod: SkillsModule;
+let roots: { cwd: string; home: string };
 
 beforeAll(async () => {
   tempRoot = await fs.mkdtemp(join(tmpdir(), "hermes-skills-"));
@@ -28,20 +24,10 @@ beforeAll(async () => {
   projectSkillsDir = join(fakeProject, ".claude", "skills");
   await fs.mkdir(globalSkillsDir, { recursive: true });
   await fs.mkdir(projectSkillsDir, { recursive: true });
-
-  process.env.HOME = fakeHome;
-  process.env.USERPROFILE = fakeHome;
-  process.chdir(fakeProject);
-
-  skillsMod = await import("./skills");
+  roots = { cwd: fakeProject, home: fakeHome };
 });
 
 afterAll(async () => {
-  process.chdir(ORIG_CWD);
-  if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
-  else delete process.env.HOME;
-  if (ORIG_USERPROFILE !== undefined) process.env.USERPROFILE = ORIG_USERPROFILE;
-  else delete process.env.USERPROFILE;
   await fs.rm(tempRoot, { recursive: true, force: true });
 });
 
@@ -64,7 +50,7 @@ beforeEach(async () => {
 
 describe("listSkills", () => {
   test("returns empty array when no skills exist", async () => {
-    const skills = await skillsMod.listSkills();
+    const skills = await listSkills(roots);
     expect(skills).toEqual([]);
   });
 
@@ -72,30 +58,26 @@ describe("listSkills", () => {
     await writeSkill(projectSkillsDir, "shared", "project body\n");
     await writeSkill(globalSkillsDir, "shared", "global body\n");
 
-    const skills = await skillsMod.listSkills();
+    const skills = await listSkills(roots);
     const shared = skills.filter((s) => s.name === "shared");
     expect(shared).toHaveLength(1);
-    // description comes from the first (project) body
     expect(shared[0].description).toBe("project body");
   });
 
   test("extracts single-line frontmatter description", async () => {
     await writeSkill(globalSkillsDir, "single", "---\ndescription: Short desc\n---\nbody\n");
-    const skills = await skillsMod.listSkills();
+    const skills = await listSkills(roots);
     const found = skills.find((s) => s.name === "single");
     expect(found?.description).toBe("Short desc");
   });
 
   test("extracts multi-line frontmatter description (block scalar)", async () => {
-    // The multi-line branch of extractDescription terminates on a following
-    // frontmatter key (`\n\w`), so include a trailing field to make the
-    // block scalar well-formed for the module's parser.
     await writeSkill(
       globalSkillsDir,
       "multi",
       "---\ndescription: >\n  This is\n  multi line\nname: multi\n---\nbody\n"
     );
-    const skills = await skillsMod.listSkills();
+    const skills = await listSkills(roots);
     const found = skills.find((s) => s.name === "multi");
     expect(found?.description).toBe("This is multi line");
     expect(found!.description.length).toBeLessThanOrEqual(256);
@@ -103,7 +85,7 @@ describe("listSkills", () => {
 
   test("falls back to first non-header, non-empty line when no frontmatter", async () => {
     await writeSkill(globalSkillsDir, "nofm", "# Heading\n\nFirst real line here\nSecond line\n");
-    const skills = await skillsMod.listSkills();
+    const skills = await listSkills(roots);
     const found = skills.find((s) => s.name === "nofm");
     expect(found?.description).toBe("First real line here");
   });
@@ -111,7 +93,7 @@ describe("listSkills", () => {
   test("truncates description to 256 chars", async () => {
     const long = "x".repeat(400);
     await writeSkill(globalSkillsDir, "long", `---\ndescription: ${long}\n---\nbody\n`);
-    const skills = await skillsMod.listSkills();
+    const skills = await listSkills(roots);
     const found = skills.find((s) => s.name === "long");
     expect(found?.description.length).toBe(256);
     expect(found?.description).toBe("x".repeat(256));
@@ -120,31 +102,31 @@ describe("listSkills", () => {
 
 describe("resolveSkillPrompt", () => {
   test("returns null when nothing is installed", async () => {
-    expect(await skillsMod.resolveSkillPrompt("anything")).toBeNull();
+    expect(await resolveSkillPrompt("anything", roots)).toBeNull();
   });
 
   test("returns null for a missing skill even when others exist", async () => {
     await writeSkill(globalSkillsDir, "other", "something\n");
-    expect(await skillsMod.resolveSkillPrompt("ghost")).toBeNull();
+    expect(await resolveSkillPrompt("ghost", roots)).toBeNull();
   });
 
   test("project skill takes priority over global skill of same name", async () => {
     await writeSkill(projectSkillsDir, "hello", "PROJECT HELLO");
     await writeSkill(globalSkillsDir, "hello", "GLOBAL HELLO");
 
-    const content = await skillsMod.resolveSkillPrompt("hello");
+    const content = await resolveSkillPrompt("hello", roots);
     expect(content).toBe("PROJECT HELLO");
   });
 
   test("falls back to global when project does not have the skill", async () => {
     await writeSkill(globalSkillsDir, "foo", "GLOBAL FOO BODY");
-    const content = await skillsMod.resolveSkillPrompt("foo");
+    const content = await resolveSkillPrompt("foo", roots);
     expect(content).toBe("GLOBAL FOO BODY");
   });
 
   test("strips a leading '/' from the command name", async () => {
     await writeSkill(globalSkillsDir, "leading-slash", "slashed body");
-    const content = await skillsMod.resolveSkillPrompt("/leading-slash");
+    const content = await resolveSkillPrompt("/leading-slash", roots);
     expect(content).toBe("slashed body");
   });
 });
