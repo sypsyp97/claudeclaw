@@ -69,19 +69,41 @@ const DELIVERY_DEFAULT: ChannelPolicy = {
   deliveryRole: "delivery",
 };
 
+// Shallow-spread leaks the module-level array references; clone every
+// nested-mutable field so callers can safely .push() into the result.
+function clonePolicy(p: ChannelPolicy): ChannelPolicy {
+  return {
+    ...p,
+    allowedSkills: p.allowedSkills === "*" ? "*" : [...p.allowedSkills],
+    modelPolicy: p.modelPolicy ? { ...p.modelPolicy } : undefined,
+  };
+}
+
 export function defaultPolicy(lookup: PolicyLookup): ChannelPolicy {
-  if (lookup.isDm) return { ...DM_DEFAULT };
-  return { ...SERVER_DEFAULT };
+  if (lookup.isDm) return clonePolicy(DM_DEFAULT);
+  return clonePolicy(SERVER_DEFAULT);
 }
 
 export function listenPolicy(): ChannelPolicy {
-  return { ...LISTEN_DEFAULT };
+  return clonePolicy(LISTEN_DEFAULT);
 }
 
 export function deliveryPolicy(): ChannelPolicy {
-  return { ...DELIVERY_DEFAULT };
+  return clonePolicy(DELIVERY_DEFAULT);
 }
 
 export function mergePolicy(base: ChannelPolicy, override: Partial<ChannelPolicy>): ChannelPolicy {
-  return { ...base, ...override };
+  const merged: ChannelPolicy = { ...base, ...override };
+  // Make sure overrides also produce an independent copy of any array/object.
+  if (override.allowedSkills !== undefined) {
+    merged.allowedSkills = override.allowedSkills === "*" ? "*" : [...override.allowedSkills];
+  } else if (base.allowedSkills !== "*") {
+    merged.allowedSkills = [...base.allowedSkills];
+  }
+  if (override.modelPolicy) {
+    merged.modelPolicy = { ...override.modelPolicy };
+  } else if (base.modelPolicy) {
+    merged.modelPolicy = { ...base.modelPolicy };
+  }
+  return merged;
 }

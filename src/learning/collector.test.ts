@@ -173,9 +173,11 @@ describe("finishCollect", () => {
     expect(event.payload.turnsSaved).toBeNull();
   });
 
-  test("double-finish is idempotent at the DB level (second call overwrites)", () => {
-    // There is no guard against double-finish; calling twice should succeed and
-    // the later values win. This test pins that behaviour.
+  test("double-finish is rejected: row stays at first values, error event recorded", () => {
+    // The collector now guards against double-finish. The DB row keeps the
+    // values from the first call; the second call records a
+    // `skill.collect.error` event with reason `double-finish` and does NOT
+    // emit a second `skill.shadow.finish`.
     const runId = startCollect(db, { skillName: "double", version: 1, shadow: true });
     finishCollect(db, { runId, skillName: "double", success: true, turnsSaved: 1, shadow: true });
     finishCollect(db, { runId, skillName: "double", success: false, turnsSaved: 5, shadow: true });
@@ -185,15 +187,20 @@ describe("finishCollect", () => {
         "SELECT success, turns_saved FROM skill_runs WHERE id = ?"
       )
       .get(runId);
-    expect(row?.success).toBe(0);
-    expect(row?.turns_saved).toBe(5);
+    expect(row?.success).toBe(1); // first call won
+    expect(row?.turns_saved).toBe(1);
 
-    // Each finish emits a fresh event.
-    const events = eventsRepo.listEvents(db, { kindPrefix: "skill.shadow.finish" });
-    expect(events).toHaveLength(2);
+    const finishEvents = eventsRepo.listEvents(db, { kindPrefix: "skill.shadow.finish" });
+    expect(finishEvents).toHaveLength(1);
+    const errorEvents = eventsRepo.listEvents<{ reason: string; runId: number }>(db, {
+      kindPrefix: "skill.collect.error",
+    });
+    expect(errorEvents).toHaveLength(1);
+    expect(errorEvents[0].payload.reason).toBe("double-finish");
+    expect(errorEvents[0].payload.runId).toBe(runId);
   });
 
-  test("finishing a non-existent run id does not throw (UPDATE simply affects 0 rows)", () => {
+  test("finishing a non-existent run id does not throw and records an error event", () => {
     expect(() => {
       finishCollect(db, {
         runId: 999_999_999,
@@ -202,9 +209,16 @@ describe("finishCollect", () => {
         shadow: true,
       });
     }).not.toThrow();
-    // Event is still logged — the collector does not cross-check existence.
-    const events = eventsRepo.listEvents(db, { kindPrefix: "skill.shadow.finish" });
-    expect(events).toHaveLength(1);
+    // No phantom finish event — the collector now cross-checks existence and
+    // records a structured error event instead.
+    const finishEvents = eventsRepo.listEvents(db, { kindPrefix: "skill.shadow.finish" });
+    expect(finishEvents).toHaveLength(0);
+    const errorEvents = eventsRepo.listEvents<{ reason: string; runId: number }>(db, {
+      kindPrefix: "skill.collect.error",
+    });
+    expect(errorEvents).toHaveLength(1);
+    expect(errorEvents[0].payload.reason).toBe("finish-on-missing-run");
+    expect(errorEvents[0].payload.runId).toBe(999_999_999);
   });
 
   test("userFeedback persists when supplied", () => {

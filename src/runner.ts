@@ -140,18 +140,22 @@ async function runClaudeOnce(
     env: buildChildEnv(baseEnv, model, api),
   });
 
+  // The timeout timer must be cleared on success — otherwise it keeps the
+  // event loop alive (`claude-hermes send` would hang for the full
+  // CLAUDE_TIMEOUT_MS after the child has already exited cleanly).
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+    timeoutHandle = setTimeout(
+      () => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)),
+      timeoutMs
+    );
   });
 
   try {
-    const [rawStdout, stderr] = await Promise.race([
-      Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]),
+    const [rawStdout, stderr] = (await Promise.race([
+      Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]),
       timeoutPromise,
-    ]) as [string, string];
+    ])) as [string, string];
     await proc.exited;
 
     return {
@@ -160,9 +164,11 @@ async function runClaudeOnce(
       exitCode: proc.exitCode ?? 1,
     };
   } catch (err) {
-    // Kill the hung process
+    // Kill the hung process. Use unref() on the SIGKILL fallback so it
+    // doesn't itself keep the event loop alive after the function returns.
     try { proc.kill("SIGTERM"); } catch {}
-    setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
+    const killTimer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
+    if (typeof killTimer.unref === "function") killTimer.unref();
 
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[${new Date().toLocaleTimeString()}] ${message}`);
@@ -172,6 +178,8 @@ async function runClaudeOnce(
       stderr: message,
       exitCode: 124,
     };
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 }
 

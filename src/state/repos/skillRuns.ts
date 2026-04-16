@@ -114,6 +114,10 @@ export function statsSinceRunId(db: Database, skillName: string, sinceRunId: num
   };
 }
 
+export function getRun(db: Database, id: number): SkillRunRow | null {
+  return db.query<SkillRunRow, [number]>("SELECT * FROM skill_runs WHERE id = ?").get(id) ?? null;
+}
+
 export function listRuns(db: Database, skillName: string, limit = 50): SkillRunRow[] {
   return db
     .query<SkillRunRow, [string, number]>(

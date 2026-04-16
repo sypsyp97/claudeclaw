@@ -37,8 +37,11 @@ export async function readLocalEvolveInbox(cwd?: string): Promise<PendingTask[]>
   for (const name of entries) {
     if (extname(name) !== ".md") continue;
     const full = join(dir, name);
+    // `null` means the read failed; an empty string means the file is empty
+    // — only the former should be skipped silently. An empty task file is a
+    // user error worth surfacing as a zero-vote stub instead of vanishing.
     const raw = await readFile(full, "utf8").catch(() => null);
-    if (!raw) continue;
+    if (raw === null) continue;
     tasks.push(parseMarkdownTask(name, raw));
   }
   return tasks;

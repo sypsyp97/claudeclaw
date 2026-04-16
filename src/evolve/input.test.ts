@@ -91,12 +91,19 @@ describe("readLocalEvolveInbox", () => {
     expect(tasks[0]?.title).toBe("real first line here");
   });
 
-  test("skips empty files (empty string is falsy in the guard)", async () => {
-    // Source uses `if (!raw) continue;` — an empty-string file gets skipped.
+  test("empty files are still surfaced (collector falls back to the filename id)", async () => {
+    // The guard changed from `if (!raw)` to `if (raw === null)`. A 0-byte
+    // file no longer vanishes silently — it shows up as a zero-vote stub
+    // whose title falls back to the filename, the same path as a
+    // whitespace-only body.
     await writeTask("empty", "");
     await writeTask("populated", "# populated\nbody");
     const tasks = await readLocalEvolveInbox(tempRoot);
-    expect(tasks.map((t) => t.id)).toEqual(["populated"]);
+    const ids = tasks.map((t) => t.id).sort();
+    expect(ids).toEqual(["empty", "populated"]);
+    const empty = tasks.find((t) => t.id === "empty");
+    expect(empty?.title).toBe("empty");
+    expect(empty?.votes).toBe(0);
   });
 
   test("falls back to filename id when the body is only whitespace", async () => {

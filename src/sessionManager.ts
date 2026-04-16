@@ -13,22 +13,29 @@ interface SessionsData {
   threads: Record<string, ThreadSession>;
 }
 
+// Cache is keyed by the resolved file path so a `process.chdir()` (typical in
+// tests) automatically invalidates it instead of returning the previous
+// workspace's data.
 let sessionsCache: SessionsData | null = null;
+let sessionsCachePath: string | null = null;
 
 async function loadSessions(): Promise<SessionsData> {
-  if (sessionsCache) return sessionsCache;
+  const path = threadSessionsFile();
+  if (sessionsCache && sessionsCachePath === path) return sessionsCache;
   try {
-    sessionsCache = await Bun.file(threadSessionsFile()).json();
-    return sessionsCache!;
+    sessionsCache = await Bun.file(path).json();
   } catch {
     sessionsCache = { threads: {} };
-    return sessionsCache;
   }
+  sessionsCachePath = path;
+  return sessionsCache!;
 }
 
 async function saveSessions(data: SessionsData): Promise<void> {
+  const path = threadSessionsFile();
   sessionsCache = data;
-  await Bun.write(threadSessionsFile(), JSON.stringify(data, null, 2) + "\n");
+  sessionsCachePath = path;
+  await Bun.write(path, JSON.stringify(data, null, 2) + "\n");
 }
 
 /** Get session for a thread. Returns null if no session exists yet. */
