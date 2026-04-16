@@ -143,6 +143,24 @@ describe("loadSettings / reloadSettings", () => {
     }
   });
 
+  test("plugins.preflightOnStart defaults to false (off unless explicitly enabled)", async () => {
+    await config.initConfig();
+    const settings = await config.reloadSettings();
+    expect(settings.plugins.preflightOnStart).toBe(false);
+  });
+
+  test("plugins.preflightOnStart=true is honored from settings.json", async () => {
+    await writeSettings(JSON.stringify({ plugins: { preflightOnStart: true } }));
+    const settings = await config.reloadSettings();
+    expect(settings.plugins.preflightOnStart).toBe(true);
+  });
+
+  test("plugins.preflightOnStart falls back to false on a non-boolean value", async () => {
+    await writeSettings(JSON.stringify({ plugins: { preflightOnStart: "yes" } }));
+    const settings = await config.reloadSettings();
+    expect(settings.plugins.preflightOnStart).toBe(false);
+  });
+
   test("reloadSettings bypasses cache and picks up on-disk changes", async () => {
     // Seed an initial settings file and prime the cache via reloadSettings
     // (loadSettings would return whatever a previous test left cached).

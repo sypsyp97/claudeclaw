@@ -424,10 +424,6 @@ export async function start(args: string[] = []) {
   }
 
   function startPreflightInBackground(projectPath: string): void {
-    if (process.env.HERMES_SKIP_PREFLIGHT === "1") {
-      console.log(`[${ts()}] Plugin preflight skipped (HERMES_SKIP_PREFLIGHT=1)`);
-      return;
-    }
     try {
       const proc = Bun.spawn([process.execPath, "run", PREFLIGHT_SCRIPT, projectPath], {
         stdin: "ignore",
@@ -559,8 +555,17 @@ export async function start(args: string[] = []) {
     await bootstrap();
   }
 
-  // Install plugins without blocking daemon startup.
-  startPreflightInBackground(process.cwd());
+  // Plugin preflight is opt-in: it clones third-party repos and runs
+  // `bun install` on their dependencies, so it must be explicitly enabled
+  // via `plugins.preflightOnStart` in settings.json (or the one-shot
+  // `hermes preflight` command). Off by default.
+  if (currentSettings.plugins.preflightOnStart) {
+    startPreflightInBackground(process.cwd());
+  } else {
+    console.log(
+      `[${ts()}] Plugin preflight skipped (plugins.preflightOnStart=false); run 'hermes preflight' to install manually.`,
+    );
+  }
 
   if (currentSettings.heartbeat.enabled) scheduleHeartbeat();
 

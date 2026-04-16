@@ -56,6 +56,7 @@ const DEFAULT_SETTINGS: Settings = {
   discord: { token: "", allowedUserIds: [], listenChannels: [] },
   security: { level: "moderate", allowedTools: [], disallowedTools: [] },
   stt: { baseUrl: "", model: "" },
+  plugins: { preflightOnStart: false },
 };
 
 export interface HeartbeatExcludeWindow {
@@ -107,6 +108,17 @@ export interface Settings {
   discord: DiscordConfig;
   security: SecurityConfig;
   stt: SttConfig;
+  plugins: PluginsConfig;
+}
+
+export interface PluginsConfig {
+  /**
+   * Whether to run preflight (clone third-party repos, `bun install`, enable
+   * in project settings) during daemon startup. Off by default — preflight
+   * fetches and executes code from the network, so it must be explicitly
+   * opted into either here or via the `hermes preflight` CLI.
+   */
+  preflightOnStart: boolean;
 }
 
 export interface AgenticMode {
@@ -261,6 +273,9 @@ function parseSettings(raw: Record<string, any>, discordUserIdsRaw: string[] = [
     stt: {
       baseUrl: typeof raw.stt?.baseUrl === "string" ? raw.stt.baseUrl.trim() : "",
       model: typeof raw.stt?.model === "string" ? raw.stt.model.trim() : "",
+    },
+    plugins: {
+      preflightOnStart: raw.plugins?.preflightOnStart === true,
     },
   };
 }
