@@ -40,6 +40,6 @@ jobs:
       - name: Push if committed
         if: success()
         run: |
-          if [[ -n $(git log origin/${GITHUB_REF_NAME}..HEAD --oneline 2>/dev/null) ]]; then
-            git push origin HEAD:${GITHUB_REF_NAME}
+          if [[ -n $(git log "origin/${GITHUB_REF_NAME}..HEAD" --oneline 2>/dev/null) ]]; then
+            git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
