@@ -292,3 +292,107 @@ describe("loadHeartbeatPromptTemplate", () => {
     expect(template.length).toBeGreaterThan(0);
   });
 });
+
+// --- StatusSink integration ---
+// When a caller attaches a StatusSink, execClaude switches to
+// runClaudeOnceStreaming (stream-json --verbose) and drives events into the
+// sink. These tests share the outer beforeAll's tmpProj + fake-claude wiring.
+
+describe("runner.run with a StatusSink", () => {
+  test("streams events into the sink and returns the assistant's final text as stdout", async () => {
+    const { createFakeSink } = await import("./status/sink");
+    const { writeFile } = await import("node:fs/promises");
+    const scenarioPath = join(tmpProj, `sink-ok-${Date.now()}.json`);
+    await writeFile(
+      scenarioPath,
+      JSON.stringify({
+        streamEvents: [
+          { type: "system", subtype: "init", session_id: "sess-sink-ok", model: "fake" },
+          {
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [{ type: "tool_use", id: "tu-1", name: "Read", input: { file_path: "/a.ts" } }],
+            },
+          },
+          {
+            type: "user",
+            message: {
+              role: "user",
+              content: [{ type: "tool_result", tool_use_id: "tu-1", content: "ok" }],
+            },
+          },
+          {
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "final user-visible reply" }],
+            },
+          },
+          {
+            type: "result",
+            subtype: "success",
+            result: "final user-visible reply",
+            session_id: "sess-sink-ok",
+            num_turns: 1,
+          },
+        ],
+      }),
+      "utf8"
+    );
+    const prevScenario = process.env.HERMES_FAKE_SCENARIO_PATH;
+    process.env.HERMES_FAKE_SCENARIO_PATH = scenarioPath;
+    try {
+      const sink = createFakeSink();
+      const result = await runner.run("sink-ok", "hi", "thread-sink-ok", sink);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("final user-visible reply");
+      const kinds = sink.events().map((e) => e.kind);
+      expect(kinds).toContain("task_start");
+      expect(kinds).toContain("tool_use_start");
+      expect(kinds).toContain("tool_use_end");
+      expect(kinds).toContain("task_complete");
+      expect(sink.calls[0]?.kind).toBe("open");
+      expect(sink.calls.at(-1)?.kind).toBe("close");
+    } finally {
+      if (prevScenario === undefined) delete process.env.HERMES_FAKE_SCENARIO_PATH;
+      else process.env.HERMES_FAKE_SCENARIO_PATH = prevScenario;
+    }
+  });
+
+  test("sink close() is called with ok=false when Claude exits non-zero", async () => {
+    const { createFakeSink } = await import("./status/sink");
+    const prevExit = process.env.HERMES_FAKE_EXIT;
+    const prevStderr = process.env.HERMES_FAKE_STDERR;
+    process.env.HERMES_FAKE_EXIT = "3";
+    process.env.HERMES_FAKE_STDERR = "fake crash";
+    try {
+      const sink = createFakeSink();
+      const result = await runner.run("sink-fail", "hi", "thread-sink-fail", sink);
+      expect(result.exitCode).toBe(3);
+      const closeCall = sink.calls.at(-1);
+      expect(closeCall?.kind).toBe("close");
+      if (closeCall?.kind === "close") {
+        expect(closeCall.result.ok).toBe(false);
+      }
+    } finally {
+      if (prevExit === undefined) delete process.env.HERMES_FAKE_EXIT;
+      else process.env.HERMES_FAKE_EXIT = prevExit;
+      if (prevStderr === undefined) delete process.env.HERMES_FAKE_STDERR;
+      else process.env.HERMES_FAKE_STDERR = prevStderr;
+    }
+  });
+
+  test("without a sink, behavior is unchanged — buffered JSON path still used", async () => {
+    process.env.HERMES_FAKE_REPLY = "buffered reply";
+    process.env.HERMES_FAKE_SESSION_ID = "sess-buffered-check";
+    try {
+      const result = await runner.run("sink-absent", "hi", "thread-sink-absent");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("buffered reply");
+    } finally {
+      delete process.env.HERMES_FAKE_REPLY;
+      delete process.env.HERMES_FAKE_SESSION_ID;
+    }
+  });
+});

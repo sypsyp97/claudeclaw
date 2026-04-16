@@ -12,6 +12,7 @@
  */
 
 import type { Database } from "../state/db";
+import type { StatusSink } from "../status/sink";
 import { executeSelfEdit, type ExecuteOptions, type ExecuteResult } from "./executor";
 import { commitChanges, revertAll, runVerify, type GateRunners, type VerifyResult } from "./gate";
 import { recordEvent } from "./journal";
@@ -37,6 +38,7 @@ export interface LoopHooks {
   runExec?(opts: ExecuteOptions): Promise<ExecuteResult>;
   buildPrompt?(task: EvolveTask): string;
   commitMessage?(task: EvolveTask): string;
+  sink?: StatusSink;
 }
 
 export async function evolveOnce(
@@ -52,7 +54,9 @@ export async function evolveOnce(
   );
 
   const prompt = (hooks.buildPrompt ?? defaultPrompt)(task);
-  const exec = await (hooks.runExec ?? executeSelfEdit)({ prompt, cwd });
+  const execOpts: ExecuteOptions = { prompt, cwd, taskId: task.id, taskLabel: task.title };
+  if (hooks.sink) execOpts.sink = hooks.sink;
+  const exec = await (hooks.runExec ?? executeSelfEdit)(execOpts);
 
   await recordEvent(
     db,

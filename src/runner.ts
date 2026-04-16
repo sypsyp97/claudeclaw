@@ -12,6 +12,8 @@ import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
 import { selectModel } from "./model-router";
 import { claudeArgv } from "./runtime/claude-cli";
+import { createStreamParser, type StatusEvent } from "./status/stream";
+import type { StatusSink } from "./status/sink";
 import {
   LEGACY_MANAGED_BLOCK_END,
   LEGACY_MANAGED_BLOCK_START,
@@ -178,6 +180,142 @@ async function runClaudeOnce(
       stderr: message,
       exitCode: 124,
     };
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
+
+/**
+ * Streaming variant of runClaudeOnce — used when the caller attaches a
+ * StatusSink (Discord/Telegram live-status path). Spawns claude with
+ * --output-format stream-json --verbose, pipes events through the sink,
+ * and returns the same shape runClaudeOnce does plus the sessionId +
+ * finalResult already extracted from the stream.
+ *
+ * rawStdout here is the raw NDJSON (for log files); callers that need a
+ * final reply should use finalResult, and callers that need the session
+ * id should use sessionId. The JSON.parse() path in execClaude only runs
+ * for the buffered (non-streaming) variant.
+ */
+async function runClaudeOnceStreaming(
+  baseArgs: string[],
+  model: string,
+  api: string,
+  baseEnv: Record<string, string>,
+  timeoutMs: number,
+  sink: StatusSink,
+  taskId: string,
+  taskLabel: string,
+): Promise<{
+  rawStdout: string;
+  stderr: string;
+  exitCode: number;
+  sessionId?: string;
+  finalResult?: string;
+}> {
+  const args = [...baseArgs, "--output-format", "stream-json", "--verbose"];
+  const normalizedModel = model.trim().toLowerCase();
+  if (model.trim() && normalizedModel !== "glm") args.push("--model", model.trim());
+
+  await sink.open(taskId, taskLabel);
+
+  const proc = Bun.spawn(args, {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: buildChildEnv(baseEnv, model, api),
+  });
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(
+      () => reject(new Error(`Claude session timed out after ${timeoutMs / 1000}s`)),
+      timeoutMs,
+    );
+  });
+
+  const parser = createStreamParser();
+  let rawStdout = "";
+  let sessionId: string | undefined;
+  let finalResult: string | undefined;
+  let errorShort: string | undefined;
+
+  async function handleEvents(events: StatusEvent[]): Promise<void> {
+    for (const event of events) {
+      if (event.kind === "task_start") {
+        sessionId = event.sessionId ?? sessionId;
+      } else if (event.kind === "task_complete") {
+        sessionId = event.sessionId ?? sessionId;
+        finalResult = event.result;
+      } else if (event.kind === "error") {
+        errorShort = event.message;
+      }
+      try {
+        await sink.update(event);
+      } catch {
+        // sink failures must never kill the Claude process
+      }
+    }
+  }
+
+  const readStdout = async (): Promise<void> => {
+    const reader = proc.stdout.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        rawStdout += chunk;
+        await handleEvents(parser.push(chunk));
+      }
+      const tail = decoder.decode();
+      if (tail) {
+        rawStdout += tail;
+        await handleEvents(parser.push(tail));
+      }
+      await handleEvents(parser.flush());
+    } finally {
+      reader.releaseLock();
+    }
+  };
+
+  try {
+    const [, stderr] = (await Promise.race([
+      Promise.all([readStdout(), new Response(proc.stderr).text()]),
+      timeoutPromise,
+    ])) as [void, string];
+    await proc.exited;
+    const exitCode = proc.exitCode ?? 1;
+    const ok = exitCode === 0;
+    try {
+      const closeResult: { ok: boolean; finalText?: string; errorShort?: string } = { ok };
+      if (finalResult !== undefined) closeResult.finalText = finalResult;
+      if (!ok && (errorShort ?? stderr)) closeResult.errorShort = errorShort ?? stderr.trim().slice(-200);
+      await sink.close(closeResult);
+    } catch {
+      // close failures must not mask the task result
+    }
+    const out: {
+      rawStdout: string;
+      stderr: string;
+      exitCode: number;
+      sessionId?: string;
+      finalResult?: string;
+    } = { rawStdout, stderr, exitCode };
+    if (sessionId !== undefined) out.sessionId = sessionId;
+    if (finalResult !== undefined) out.finalResult = finalResult;
+    return out;
+  } catch (err) {
+    try { proc.kill("SIGTERM"); } catch {}
+    const killTimer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
+    if (typeof killTimer.unref === "function") killTimer.unref();
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      await sink.close({ ok: false, errorShort: message });
+    } catch {
+      // swallow
+    }
+    return { rawStdout: "", stderr: message, exitCode: 124 };
   } finally {
     if (timeoutHandle) clearTimeout(timeoutHandle);
   }
@@ -357,7 +495,12 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
     : { success: false, message: `❌ Compact failed (${existing.sessionId.slice(0, 8)})` };
 }
 
-async function execClaude(name: string, prompt: string, threadId?: string): Promise<RunResult> {
+async function execClaude(
+  name: string,
+  prompt: string,
+  threadId?: string,
+  sink?: StatusSink,
+): Promise<RunResult> {
   const logs = logsDir();
   await mkdir(logs, { recursive: true });
 
@@ -401,8 +544,11 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
 
   // New session: use json output to capture Claude's session_id
   // Resumed session: use text output with --resume
+  // With sink: streaming path (stream-json --verbose) added inside runClaudeOnceStreaming.
   const outputFormat = isNew ? "json" : "text";
-  const args = [...claudeArgv(), "-p", prompt, "--output-format", outputFormat, ...securityArgs];
+  const args = sink
+    ? [...claudeArgv(), "-p", prompt, ...securityArgs]
+    : [...claudeArgv(), "-p", prompt, "--output-format", outputFormat, ...securityArgs];
 
   if (!isNew) {
     args.push("--resume", existing.sessionId);
@@ -436,7 +582,24 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   const { CLAUDECODE: _, ...cleanEnv } = process.env;
   const baseEnv = { ...cleanEnv } as Record<string, string>;
 
-  let exec = await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
+  let exec: {
+    rawStdout: string;
+    stderr: string;
+    exitCode: number;
+    sessionId?: string;
+    finalResult?: string;
+  } = sink
+    ? await runClaudeOnceStreaming(
+        args,
+        primaryConfig.model,
+        primaryConfig.api,
+        baseEnv,
+        timeoutMs,
+        sink,
+        name,
+        prompt.slice(0, 140),
+      )
+    : await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
   let usedFallback = false;
 
@@ -444,7 +607,18 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     console.warn(
       `[${new Date().toLocaleTimeString()}] Claude limit reached; retrying with fallback${fallbackConfig.model ? ` (${fallbackConfig.model})` : ""}...`
     );
-    exec = await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs);
+    exec = sink
+      ? await runClaudeOnceStreaming(
+          args,
+          fallbackConfig.model,
+          fallbackConfig.api,
+          baseEnv,
+          timeoutMs,
+          sink,
+          name,
+          prompt.slice(0, 140),
+        )
+      : await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs);
     usedFallback = true;
   }
 
@@ -459,13 +633,12 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
     stdout = rateLimitMessage;
   }
 
-  // For new sessions, parse the JSON to extract session_id and result text
+  // For new sessions, extract session_id + result text. Streaming has these
+  // already on `exec`; buffered mode requires a JSON.parse of the JSON envelope.
   if (!rateLimitMessage && isNew && exitCode === 0) {
-    try {
-      const json = JSON.parse(rawStdout);
-      sessionId = json.session_id;
-      stdout = json.result ?? "";
-      // Save the real session ID from Claude Code
+    if (sink && exec.sessionId) {
+      sessionId = exec.sessionId;
+      stdout = exec.finalResult ?? "";
       if (threadId) {
         await createThreadSession(threadId, sessionId);
         console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
@@ -473,9 +646,26 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
         await createSession(sessionId);
         console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}`);
       }
-    } catch (e) {
-      console.error(`[${new Date().toLocaleTimeString()}] Failed to parse session from Claude output:`, e);
+    } else {
+      try {
+        const json = JSON.parse(rawStdout);
+        sessionId = json.session_id;
+        stdout = json.result ?? "";
+        if (threadId) {
+          await createThreadSession(threadId, sessionId);
+          console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
+        } else {
+          await createSession(sessionId);
+          console.log(`[${new Date().toLocaleTimeString()}] Session created: ${sessionId}`);
+        }
+      } catch (e) {
+        console.error(`[${new Date().toLocaleTimeString()}] Failed to parse session from Claude output:`, e);
+      }
     }
+  } else if (!rateLimitMessage && !isNew && exitCode === 0 && sink && exec.finalResult !== undefined) {
+    // Resumed sessions in streaming mode: stdout is the assistant's final text,
+    // not the NDJSON.
+    stdout = exec.finalResult;
   }
 
   const result: RunResult = {
@@ -556,8 +746,13 @@ async function execClaude(name: string, prompt: string, threadId?: string): Prom
   return result;
 }
 
-export async function run(name: string, prompt: string, threadId?: string): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, threadId), threadId);
+export async function run(
+  name: string,
+  prompt: string,
+  threadId?: string,
+  sink?: StatusSink,
+): Promise<RunResult> {
+  return enqueue(() => execClaude(name, prompt, threadId, sink), threadId);
 }
 
 function prefixUserMessageWithClock(prompt: string): string {
@@ -571,8 +766,13 @@ function prefixUserMessageWithClock(prompt: string): string {
   }
 }
 
-export async function runUserMessage(name: string, prompt: string, threadId?: string): Promise<RunResult> {
-  return run(name, prefixUserMessageWithClock(prompt), threadId);
+export async function runUserMessage(
+  name: string,
+  prompt: string,
+  threadId?: string,
+  sink?: StatusSink,
+): Promise<RunResult> {
+  return run(name, prefixUserMessageWithClock(prompt), threadId, sink);
 }
 
 /**

@@ -9,6 +9,7 @@ import { resolveSkillPrompt, listSkills } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { telegramInboxDir } from "../paths";
+import { createTelegramStatusSink, type TelegramTransport } from "../status/sinks/telegram";
 
 // --- Markdown → Telegram HTML conversion (ported from nanobot) ---
 
@@ -297,6 +298,33 @@ async function callApi<T>(token: string, method: string, body?: Record<string, u
     throw new Error(`Telegram API ${method}: ${res.status} ${res.statusText}`);
   }
   return (await res.json()) as T;
+}
+
+function telegramStatusTransport(token: string): TelegramTransport {
+  return {
+    async sendMessage(chatId, text, threadId) {
+      const trimmed = text.slice(0, 4096);
+      const body: Record<string, unknown> = { chat_id: chatId, text: trimmed };
+      if (threadId !== undefined) body.message_thread_id = threadId;
+      const res = await callApi<{ ok: boolean; result: { message_id: number } }>(
+        token,
+        "sendMessage",
+        body,
+      );
+      return { messageId: res.result.message_id };
+    },
+    async editMessageText(chatId, messageId, text) {
+      const trimmed = text.slice(0, 4096);
+      await callApi(token, "editMessageText", {
+        chat_id: chatId,
+        message_id: messageId,
+        text: trimmed,
+      });
+    },
+    async deleteMessage(chatId, messageId) {
+      await callApi(token, "deleteMessage", { chat_id: chatId, message_id: messageId });
+    },
+  };
 }
 
 async function sendMessage(token: string, chatId: number, text: string, threadId?: number): Promise<void> {
@@ -833,7 +861,12 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       );
     }
     const prefixedPrompt = promptParts.join("\n");
-    const result = await runUserMessage("telegram", prefixedPrompt);
+    const statusSink = createTelegramStatusSink({
+      transport: telegramStatusTransport(config.token),
+      chatId,
+      ...(threadId !== undefined && { threadId }),
+    });
+    const result = await runUserMessage("telegram", prefixedPrompt, undefined, statusSink);
 
     if (result.exitCode !== 0) {
       await sendMessage(config.token, chatId, `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}`, threadId);

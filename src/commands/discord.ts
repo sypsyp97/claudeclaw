@@ -10,6 +10,7 @@ import { resolveSkillPrompt } from "../skills";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { discordInboxDir } from "../paths";
+import { createDiscordStatusSink, type DiscordTransport } from "../status/sinks/discord";
 
 // --- Discord API constants ---
 
@@ -164,6 +165,33 @@ async function discordApi<T>(
 }
 
 // --- Message sending ---
+
+function discordStatusTransport(token: string): DiscordTransport {
+  return {
+    async postMessage(channelId, content) {
+      const trimmed = content.slice(0, 2000);
+      const res = await discordApi<{ id: string }>(
+        token,
+        "POST",
+        `/channels/${channelId}/messages`,
+        { content: trimmed },
+      );
+      return { id: res.id };
+    },
+    async patchMessage(channelId, messageId, content) {
+      const trimmed = content.slice(0, 2000);
+      await discordApi(
+        token,
+        "PATCH",
+        `/channels/${channelId}/messages/${messageId}`,
+        { content: trimmed },
+      );
+    },
+    async deleteMessage(channelId, messageId) {
+      await discordApi(token, "DELETE", `/channels/${channelId}/messages/${messageId}`);
+    },
+  };
+}
 
 async function sendMessage(
   token: string,
@@ -646,7 +674,11 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     const prefixedPrompt = promptParts.join("\n");
     // Use thread-specific session if message is in a known thread
     const threadId = knownThreads.has(channelId) ? channelId : undefined;
-    const result = await runUserMessage("discord", prefixedPrompt, threadId);
+    const statusSink = createDiscordStatusSink({
+      transport: discordStatusTransport(config.token),
+      channelId,
+    });
+    const result = await runUserMessage("discord", prefixedPrompt, threadId, statusSink);
 
     if (result.exitCode !== 0) {
       await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${result.stderr || result.stdout || "Unknown error"}`);

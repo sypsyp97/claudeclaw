@@ -17,6 +17,7 @@
 
 import { applyMigrations, closeDb, openDb } from "../src/state";
 import { evolveOnce, type EvolveTask } from "../src/evolve";
+import { createTerminalStatusSink } from "../src/status/sinks/terminal";
 
 const body = (await readTaskBody()).trim();
 if (!body) {
@@ -33,8 +34,10 @@ const task: EvolveTask = buildTask(body);
 const db = openDb();
 await applyMigrations(db);
 
+const sink = createTerminalStatusSink();
+
 try {
-  const result = await evolveOnce(db, task);
+  const result = await evolveOnce(db, task, process.cwd(), { sink });
   process.stdout.write(
     `${JSON.stringify(
       {

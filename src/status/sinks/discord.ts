@@ -1,0 +1,74 @@
+/**
+ * Discord status sink. Posts a single "status message" into the target
+ * channel on open(), edits it in place on each update(), and collapses it
+ * to a compact final summary on close().
+ *
+ * The transport is passed in so production wiring can hand it the existing
+ * `discordApi` helper while tests inject a recorder. Any transport error is
+ * swallowed — status rendering is never critical-path.
+ */
+
+import { createCoalescer, type Coalescer } from "../coalesce";
+import { createRenderer, type Renderer } from "../render";
+import type { CloseResult, StatusSink } from "../sink";
+import type { StatusEvent } from "../stream";
+
+export interface DiscordTransport {
+  postMessage(channelId: string, content: string): Promise<{ id: string }>;
+  patchMessage(channelId: string, messageId: string, content: string): Promise<void>;
+  deleteMessage(channelId: string, messageId: string): Promise<void>;
+}
+
+export interface DiscordStatusSinkOptions {
+  transport: DiscordTransport;
+  channelId: string;
+  windowMs?: number;
+}
+
+export function createDiscordStatusSink(opts: DiscordStatusSinkOptions): StatusSink {
+  const { transport, channelId } = opts;
+  let renderer: Renderer | null = null;
+  let messageId: string | null = null;
+  let coalescer: Coalescer | null = null;
+
+  async function sendPatch(): Promise<void> {
+    if (!messageId || !renderer) return;
+    const content = renderer.render();
+    try {
+      await transport.patchMessage(channelId, messageId, content);
+    } catch {
+      // swallow — status display is best-effort
+    }
+  }
+
+  return {
+    async open(_taskId, label) {
+      renderer = createRenderer(label);
+      coalescer = createCoalescer(sendPatch, { windowMs: opts.windowMs });
+      const initial = renderer.render();
+      try {
+        const result = await transport.postMessage(channelId, initial);
+        messageId = result.id;
+      } catch {
+        messageId = null;
+      }
+    },
+
+    async update(event: StatusEvent) {
+      if (!renderer || !messageId || !coalescer) return;
+      renderer.apply(event);
+      coalescer.schedule();
+    },
+
+    async close(result: CloseResult) {
+      if (coalescer) coalescer.dispose();
+      if (!renderer || !messageId) return;
+      const finalContent = renderer.renderFinal(result);
+      try {
+        await transport.patchMessage(channelId, messageId, finalContent);
+      } catch {
+        // swallow
+      }
+    },
+  };
+}
