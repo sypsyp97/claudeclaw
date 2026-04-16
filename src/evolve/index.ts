@@ -4,7 +4,14 @@
  * doesn't ripple out.
  */
 
-export { commitChanges, revertAll, runVerify, type GateRunners, type VerifyResult } from "./gate";
+export {
+  commitChanges,
+  computeDirtyPaths,
+  type GateRunners,
+  revertPaths,
+  runVerify,
+  type VerifyResult,
+} from "./gate";
 export { executeSelfEdit, type ExecuteOptions, type ExecuteResult } from "./executor";
 export { recordEvent, journalFile, type EvolveEvent, type EvolveEventKind } from "./journal";
 export {

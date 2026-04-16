@@ -31,12 +31,20 @@ function task(overrides: Partial<EvolveTask> = {}): EvolveTask {
 describe("evolveOnce — fake executor", () => {
   test("commits when exec + verify are green", async () => {
     let committed = false;
+    let statusCalls = 0;
     const result = await evolveOnce(db, task({ id: "green-task", title: "green task" }), tempRoot, {
       runExec: async () => ({ ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
       gate: {
         runVerify: async () => ({ ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
         runGit: async (_cwd, args) => {
-          if (args[0] === "status") return { ok: true, stdout: " M file\n", stderr: "" };
+          if (args[0] === "status") {
+            statusCalls++;
+            return statusCalls === 1
+              ? { ok: true, stdout: "", stderr: "" }
+              : { ok: true, stdout: " M src/foo.ts\n", stderr: "" };
+          }
+          if (args[0] === "add") return { ok: true, stdout: "", stderr: "" };
+          if (args[0] === "diff") return { ok: true, stdout: "src/foo.ts\n", stderr: "" };
           if (args[0] === "commit") {
             committed = true;
             return { ok: true, stdout: "", stderr: "" };
@@ -53,8 +61,9 @@ describe("evolveOnce — fake executor", () => {
     expect(result.sha).toBe("deadbeefcafe");
   });
 
-  test("reverts when verify is red", async () => {
-    let reverted = 0;
+  test("reverts only the exec-touched paths when verify is red", async () => {
+    const restoreCalls: string[][] = [];
+    let statusCalls = 0;
 
     const result = await evolveOnce(db, task({ id: "red-task", title: "red task" }), tempRoot, {
       runExec: async () => ({ ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
@@ -67,22 +76,40 @@ describe("evolveOnce — fake executor", () => {
           durationMs: 2,
         }),
         runGit: async (_cwd, args) => {
-          if (args[0] === "restore" || args[0] === "clean") reverted++;
+          if (args[0] === "status") {
+            statusCalls++;
+            // Baseline: user already has an unrelated WIP file dirty.
+            if (statusCalls === 1) return { ok: true, stdout: "?? user-wip.txt\n", stderr: "" };
+            // After exec: user-wip still dirty + new evolve touch.
+            return {
+              ok: true,
+              stdout: "?? user-wip.txt\n M src/evolve-edit.ts\n",
+              stderr: "",
+            };
+          }
+          if (args[0] === "restore" || args[0] === "clean") restoreCalls.push(args);
           return { ok: true, stdout: "", stderr: "" };
         },
       },
     });
 
     expect(result.outcome).toBe("verify-failed");
-    expect(reverted).toBeGreaterThan(0);
+    // Every revert command must be pathspec-scoped, and must NOT touch the user's WIP file.
+    expect(restoreCalls.length).toBeGreaterThan(0);
+    for (const call of restoreCalls) {
+      expect(call).toContain("--");
+      expect(call).toContain("src/evolve-edit.ts");
+      expect(call).not.toContain("user-wip.txt");
+    }
 
     const revertEvents = eventsRepo.listEvents(db, { kindPrefix: "evolve.revert" });
     expect(revertEvents.length).toBeGreaterThanOrEqual(1);
   });
 
-  test("exec failure reverts changes and skips verify", async () => {
+  test("exec failure reverts only exec-touched paths and skips verify", async () => {
     let verifyCalled = false;
-    let reverted = 0;
+    const restoreCalls: string[][] = [];
+    let statusCalls = 0;
 
     const result = await evolveOnce(db, task({ id: "exec-blows", title: "exec blows up" }), tempRoot, {
       runExec: async () => ({ ok: false, exitCode: 7, stdout: "", stderr: "boom", durationMs: 1 }),
@@ -92,7 +119,12 @@ describe("evolveOnce — fake executor", () => {
           return { ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 };
         },
         runGit: async (_cwd, args) => {
-          if (args[0] === "restore" || args[0] === "clean") reverted++;
+          if (args[0] === "status") {
+            statusCalls++;
+            if (statusCalls === 1) return { ok: true, stdout: "", stderr: "" };
+            return { ok: true, stdout: "?? half-applied.ts\n", stderr: "" };
+          }
+          if (args[0] === "restore" || args[0] === "clean") restoreCalls.push(args);
           return { ok: true, stdout: "", stderr: "" };
         },
       },
@@ -100,6 +132,28 @@ describe("evolveOnce — fake executor", () => {
 
     expect(result.outcome).toBe("exec-failed");
     expect(verifyCalled).toBe(false);
-    expect(reverted).toBeGreaterThan(0);
+    expect(restoreCalls.length).toBeGreaterThan(0);
+    for (const call of restoreCalls) {
+      expect(call).toContain("--");
+      expect(call).toContain("half-applied.ts");
+    }
+  });
+
+  test("does not revert anything when nothing was touched (clean exec failure)", async () => {
+    const restoreCalls: string[][] = [];
+
+    await evolveOnce(db, task({ id: "clean-fail", title: "clean fail" }), tempRoot, {
+      runExec: async () => ({ ok: false, exitCode: 1, stdout: "", stderr: "", durationMs: 1 }),
+      gate: {
+        runVerify: async () => ({ ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
+        runGit: async (_cwd, args) => {
+          if (args[0] === "status") return { ok: true, stdout: "", stderr: "" };
+          if (args[0] === "restore" || args[0] === "clean") restoreCalls.push(args);
+          return { ok: true, stdout: "", stderr: "" };
+        },
+      },
+    });
+
+    expect(restoreCalls).toEqual([]);
   });
 });

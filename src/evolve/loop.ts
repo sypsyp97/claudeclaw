@@ -14,7 +14,14 @@
 import type { Database } from "../state/db";
 import type { StatusSink } from "../status/sink";
 import { executeSelfEdit, type ExecuteOptions, type ExecuteResult } from "./executor";
-import { commitChanges, revertAll, runVerify, type GateRunners, type VerifyResult } from "./gate";
+import {
+  commitChanges,
+  computeDirtyPaths,
+  type GateRunners,
+  revertPaths,
+  runVerify,
+  type VerifyResult,
+} from "./gate";
 import { recordEvent } from "./journal";
 
 export interface EvolveTask {
@@ -53,6 +60,8 @@ export async function evolveOnce(
     cwd,
   );
 
+  const baselineDirty = new Set(await computeDirtyPaths(cwd, hooks.gate));
+
   const prompt = (hooks.buildPrompt ?? defaultPrompt)(task);
   const execOpts: ExecuteOptions = { prompt, cwd, taskId: task.id, taskLabel: task.title };
   if (hooks.sink) execOpts.sink = hooks.sink;
@@ -69,14 +78,19 @@ export async function evolveOnce(
     cwd,
   );
 
+  const touchedPaths = async (): Promise<string[]> => {
+    const after = await computeDirtyPaths(cwd, hooks.gate);
+    return after.filter((p) => !baselineDirty.has(p));
+  };
+
   if (!exec.ok) {
-    await revertAll(cwd, hooks.gate);
+    await revertPaths(cwd, await touchedPaths(), hooks.gate);
     return { outcome: "exec-failed", task, exec };
   }
 
   const verify = await runVerify(cwd, hooks.gate);
   if (!verify.ok) {
-    await revertAll(cwd, hooks.gate);
+    await revertPaths(cwd, await touchedPaths(), hooks.gate);
     await recordEvent(
       db,
       {
@@ -91,7 +105,7 @@ export async function evolveOnce(
   }
 
   const message = (hooks.commitMessage ?? defaultCommitMessage)(task);
-  const sha = await commitChanges(cwd, message, hooks.gate);
+  const sha = await commitChanges(cwd, message, await touchedPaths(), hooks.gate);
   await recordEvent(
     db,
     {
