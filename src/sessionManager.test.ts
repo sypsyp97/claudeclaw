@@ -1,42 +1,32 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import * as fs from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { rmWithRetry } from "../tests/helpers/rm-with-retry";
+import { resetSharedDbCache } from "./state/shared-db";
 
-// sessionManager uses threadSessionsFile() which derives from process.cwd(). An
-// internal module-level cache (`sessionsCache`) backs the file: tests must
-// invalidate it by rewriting the underlying file between describe blocks. We
-// chdir into a fresh tmp dir and reset the file via fs.writeFile to keep the
-// cache-on-first-load behaviour predictable.
 const ORIG_CWD = process.cwd();
 let tempRoot: string;
-let sessFile: string;
 let mgr: typeof import("./sessionManager");
 
 beforeAll(async () => {
-  tempRoot = await fs.mkdtemp(join(tmpdir(), "hermes-sessmgr-"));
-  await fs.mkdir(join(tempRoot, ".claude", "hermes"), { recursive: true });
-  sessFile = join(tempRoot, ".claude", "hermes", "sessions.json");
+  tempRoot = await mkdtemp(join(tmpdir(), "hermes-sessmgr-"));
+  await mkdir(join(tempRoot, ".claude", "hermes"), { recursive: true });
   process.chdir(tempRoot);
   mgr = await import("./sessionManager");
 });
 
 afterAll(async () => {
+  await resetSharedDbCache();
   process.chdir(ORIG_CWD);
-  await fs.rm(tempRoot, { recursive: true, force: true });
+  await rmWithRetry(tempRoot);
 });
 
-// Reset persistent state + blow away the module cache before each test by
-// rewriting the file to an empty shape. The loader reads from disk only when
-// the internal cache is null OR mutates the cache on write; rewriting the file
-// alone is NOT enough when a previous test populated the cache — so we also
-// remove all known keys via removeThreadSession to drop cache entries.
 async function clearSessions(): Promise<void> {
-  const existing = await mgr.listThreadSessions().catch(() => []);
+  const existing = await mgr.listThreadSessions();
   for (const s of existing) {
-    await mgr.removeThreadSession(s.threadId);
+    await mgr.removeThreadSession(s.source, s.threadId);
   }
-  await fs.writeFile(sessFile, JSON.stringify({ threads: {} }, null, 2) + "\n");
 }
 
 beforeEach(async () => {
@@ -45,132 +35,142 @@ beforeEach(async () => {
 
 describe("getThreadSession", () => {
   test("returns null when no session exists for the thread", async () => {
-    const result = await mgr.getThreadSession("missing");
-    expect(result).toBeNull();
+    expect(await mgr.getThreadSession("discord", "missing")).toBeNull();
   });
 
-  test("returns the shape {sessionId, turnCount, compactWarned} after create", async () => {
-    await mgr.createThreadSession("t1", "session-abc");
-    const result = await mgr.getThreadSession("t1");
-    expect(result).toEqual({
+  test("returns shape {sessionId, turnCount, compactWarned} after create", async () => {
+    await mgr.createThreadSession("discord", "t1", "session-abc");
+    expect(await mgr.getThreadSession("discord", "t1")).toEqual({
       sessionId: "session-abc",
       turnCount: 0,
       compactWarned: false,
     });
   });
+
+  test("isolates sessions by source — same threadId under two sources does not collide", async () => {
+    await mgr.createThreadSession("discord", "same-id", "claude-discord");
+    await mgr.createThreadSession("telegram", "same-id", "claude-telegram");
+    expect((await mgr.getThreadSession("discord", "same-id"))?.sessionId).toBe("claude-discord");
+    expect((await mgr.getThreadSession("telegram", "same-id"))?.sessionId).toBe("claude-telegram");
+  });
 });
 
 describe("createThreadSession", () => {
   test("initialises turnCount=0 and compactWarned=false", async () => {
-    await mgr.createThreadSession("t-init", "sess-1");
-    const peek = await mgr.peekThreadSession("t-init");
+    await mgr.createThreadSession("discord", "t-init", "sess-1");
+    const peek = await mgr.peekThreadSession("discord", "t-init");
     expect(peek).not.toBeNull();
     expect(peek?.turnCount).toBe(0);
     expect(peek?.compactWarned).toBe(false);
     expect(peek?.sessionId).toBe("sess-1");
     expect(peek?.threadId).toBe("t-init");
+    expect(peek?.source).toBe("discord");
     expect(typeof peek?.createdAt).toBe("string");
     expect(typeof peek?.lastUsedAt).toBe("string");
   });
 
-  test("overwrites an existing session when called twice with same threadId", async () => {
-    await mgr.createThreadSession("t-same", "first");
-    await mgr.createThreadSession("t-same", "second");
-    const peek = await mgr.peekThreadSession("t-same");
+  test("replaces and resets counters on same (source, threadId)", async () => {
+    await mgr.createThreadSession("discord", "t-same", "first");
+    await mgr.incrementThreadTurn("discord", "t-same");
+    await mgr.markThreadCompactWarned("discord", "t-same");
+    await mgr.createThreadSession("discord", "t-same", "second");
+    const peek = await mgr.peekThreadSession("discord", "t-same");
     expect(peek?.sessionId).toBe("second");
+    expect(peek?.turnCount).toBe(0);
+    expect(peek?.compactWarned).toBe(false);
   });
 });
 
 describe("removeThreadSession", () => {
   test("removes an existing session", async () => {
-    await mgr.createThreadSession("t-del", "s");
-    await mgr.removeThreadSession("t-del");
-    expect(await mgr.peekThreadSession("t-del")).toBeNull();
+    await mgr.createThreadSession("discord", "t-del", "s");
+    await mgr.removeThreadSession("discord", "t-del");
+    expect(await mgr.peekThreadSession("discord", "t-del")).toBeNull();
   });
 
-  test("is idempotent — removing a missing threadId does not throw", async () => {
-    await expect(mgr.removeThreadSession("never-existed")).resolves.toBeUndefined();
-    await mgr.removeThreadSession("never-existed");
-    await mgr.removeThreadSession("never-existed");
+  test("idempotent — removing a missing threadId does not throw", async () => {
+    await expect(mgr.removeThreadSession("discord", "never-existed")).resolves.toBeUndefined();
+    await mgr.removeThreadSession("discord", "never-existed");
+  });
+
+  test("only removes the matching source's row", async () => {
+    await mgr.createThreadSession("discord", "shared", "d");
+    await mgr.createThreadSession("telegram", "shared", "t");
+    await mgr.removeThreadSession("discord", "shared");
+    expect(await mgr.peekThreadSession("discord", "shared")).toBeNull();
+    expect(await mgr.peekThreadSession("telegram", "shared")).not.toBeNull();
   });
 });
 
 describe("incrementThreadTurn", () => {
   test("increments by 1 and returns the new value", async () => {
-    await mgr.createThreadSession("t-inc", "sess");
-    const first = await mgr.incrementThreadTurn("t-inc");
-    expect(first).toBe(1);
-    const second = await mgr.incrementThreadTurn("t-inc");
-    expect(second).toBe(2);
-    const third = await mgr.incrementThreadTurn("t-inc");
-    expect(third).toBe(3);
+    await mgr.createThreadSession("discord", "t-inc", "sess");
+    expect(await mgr.incrementThreadTurn("discord", "t-inc")).toBe(1);
+    expect(await mgr.incrementThreadTurn("discord", "t-inc")).toBe(2);
+    expect(await mgr.incrementThreadTurn("discord", "t-inc")).toBe(3);
   });
 
   test("returns 0 when the session is missing", async () => {
-    const result = await mgr.incrementThreadTurn("ghost");
-    expect(result).toBe(0);
+    expect(await mgr.incrementThreadTurn("discord", "ghost")).toBe(0);
   });
 
   test("persists the incremented count so peek sees it", async () => {
-    await mgr.createThreadSession("t-persist", "sess");
-    await mgr.incrementThreadTurn("t-persist");
-    await mgr.incrementThreadTurn("t-persist");
-    const peek = await mgr.peekThreadSession("t-persist");
-    expect(peek?.turnCount).toBe(2);
+    await mgr.createThreadSession("discord", "t-persist", "sess");
+    await mgr.incrementThreadTurn("discord", "t-persist");
+    await mgr.incrementThreadTurn("discord", "t-persist");
+    expect((await mgr.peekThreadSession("discord", "t-persist"))?.turnCount).toBe(2);
   });
 });
 
 describe("listThreadSessions", () => {
   test("returns empty array when nothing created", async () => {
-    const list = await mgr.listThreadSessions();
-    expect(list).toEqual([]);
+    expect(await mgr.listThreadSessions()).toEqual([]);
   });
 
   test("returns every thread session created", async () => {
-    await mgr.createThreadSession("a", "sa");
-    await mgr.createThreadSession("b", "sb");
-    await mgr.createThreadSession("c", "sc");
+    await mgr.createThreadSession("discord", "a", "sa");
+    await mgr.createThreadSession("discord", "b", "sb");
+    await mgr.createThreadSession("telegram", "c", "sc");
     const list = await mgr.listThreadSessions();
     const ids = list.map((s) => s.threadId).sort();
     expect(ids).toEqual(["a", "b", "c"]);
+    const sources = list.map((s) => `${s.source}:${s.threadId}`).sort();
+    expect(sources).toEqual(["discord:a", "discord:b", "telegram:c"]);
   });
 });
 
 describe("peekThreadSession", () => {
   test("returns null for missing thread", async () => {
-    expect(await mgr.peekThreadSession("nope")).toBeNull();
+    expect(await mgr.peekThreadSession("discord", "nope")).toBeNull();
   });
 
   test("does NOT update lastUsedAt", async () => {
-    await mgr.createThreadSession("t-peek", "sess");
-    const before = (await mgr.peekThreadSession("t-peek"))?.lastUsedAt;
-    // Wait long enough that a new Date().toISOString() would differ.
+    await mgr.createThreadSession("discord", "t-peek", "sess");
+    const before = (await mgr.peekThreadSession("discord", "t-peek"))?.lastUsedAt;
     await new Promise((r) => setTimeout(r, 10));
-    await mgr.peekThreadSession("t-peek");
-    await mgr.peekThreadSession("t-peek");
-    const after = (await mgr.peekThreadSession("t-peek"))?.lastUsedAt;
+    await mgr.peekThreadSession("discord", "t-peek");
+    const after = (await mgr.peekThreadSession("discord", "t-peek"))?.lastUsedAt;
     expect(after).toBe(before);
   });
 
   test("getThreadSession DOES update lastUsedAt", async () => {
-    await mgr.createThreadSession("t-touch", "sess");
-    const before = (await mgr.peekThreadSession("t-touch"))?.lastUsedAt;
+    await mgr.createThreadSession("discord", "t-touch", "sess");
+    const before = (await mgr.peekThreadSession("discord", "t-touch"))?.lastUsedAt;
     await new Promise((r) => setTimeout(r, 10));
-    await mgr.getThreadSession("t-touch");
-    const after = (await mgr.peekThreadSession("t-touch"))?.lastUsedAt;
+    await mgr.getThreadSession("discord", "t-touch");
+    const after = (await mgr.peekThreadSession("discord", "t-touch"))?.lastUsedAt;
     expect(after).not.toBe(before);
   });
 });
 
 describe("markThreadCompactWarned", () => {
   test("flips compactWarned from false to true", async () => {
-    await mgr.createThreadSession("t-warn", "sess");
-    await mgr.markThreadCompactWarned("t-warn");
-    const peek = await mgr.peekThreadSession("t-warn");
-    expect(peek?.compactWarned).toBe(true);
+    await mgr.createThreadSession("discord", "t-warn", "sess");
+    await mgr.markThreadCompactWarned("discord", "t-warn");
+    expect((await mgr.peekThreadSession("discord", "t-warn"))?.compactWarned).toBe(true);
   });
 
   test("is a no-op on missing thread", async () => {
-    await expect(mgr.markThreadCompactWarned("ghost")).resolves.toBeUndefined();
+    await expect(mgr.markThreadCompactWarned("discord", "ghost")).resolves.toBeUndefined();
   });
 });

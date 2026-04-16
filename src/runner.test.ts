@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { rmWithRetry } from "../tests/helpers/rm-with-retry";
 
 const ORIG_CWD = process.cwd();
 const FAKE_CLAUDE_ABS = join(ORIG_CWD, "tests", "fixtures", "fake-claude.ts");
@@ -39,7 +40,10 @@ beforeAll(async () => {
   runner = await import("./runner");
 });
 
-afterAll(() => {
+afterAll(async () => {
+  // Drop the shared-db cache so Windows can release the tmp workspace.
+  const { resetSharedDbCache } = await import("./state/shared-db");
+  await resetSharedDbCache();
   process.chdir(ORIG_CWD);
   delete process.env.HERMES_CLAUDE_BIN;
   delete process.env.HERMES_FAKE_DELAY_MS;
@@ -48,7 +52,7 @@ afterAll(() => {
   delete process.env.HERMES_FAKE_SESSION_ID;
   delete process.env.HERMES_FAKE_RATE_LIMIT;
   delete process.env.HERMES_FAKE_EXIT;
-  rmSync(tmpProj, { recursive: true, force: true });
+  await rmWithRetry(tmpProj);
 });
 
 afterEach(async () => {
@@ -193,8 +197,8 @@ describe("runner thread sessions", () => {
     const rb = await runner.run("tb", "hi", "thread-iso-B");
     expect(rb.exitCode).toBe(0);
 
-    const a = await sessionMgr.peekThreadSession("thread-iso-A");
-    const b = await sessionMgr.peekThreadSession("thread-iso-B");
+    const a = await sessionMgr.peekThreadSession("cli", "thread-iso-A");
+    const b = await sessionMgr.peekThreadSession("cli", "thread-iso-B");
     expect(a?.sessionId).toBe("thread-session-A");
     expect(b?.sessionId).toBe("thread-session-B");
     expect(a?.sessionId).not.toBe(b?.sessionId);

@@ -12,9 +12,10 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { rmWithRetry } from "../helpers/rm-with-retry";
 import { resolveDiscordPolicy } from "../../src/adapters/discord/channel-policy";
 import {
   type DiscordContext,
@@ -71,13 +72,17 @@ beforeAll(async () => {
   runner = await import("../../src/runner");
 });
 
-afterAll(() => {
+afterAll(async () => {
   closeDb(db);
+  // Drop the shared-db cache before removing the tempdir — on Windows a
+  // held-open SQLite handle turns the rmSync into an EBUSY.
+  const { resetSharedDbCache } = await import("../../src/state/shared-db");
+  await resetSharedDbCache();
   process.chdir(ORIG_CWD);
   delete process.env.HERMES_CLAUDE_BIN;
   delete process.env.HERMES_FAKE_REPLY;
   delete process.env.HERMES_FAKE_SESSION_ID;
-  rmSync(tmpProj, { recursive: true, force: true });
+  await rmWithRetry(tmpProj);
 });
 
 /**
@@ -150,11 +155,17 @@ describe("Discord end-to-end (envelope → router → runner)", () => {
 
     process.env.HERMES_FAKE_REPLY = "pong";
     process.env.HERMES_FAKE_SESSION_ID = "dm-session";
-    const result = await runner.runUserMessage("discord-dm", env.message.text, routed.decision.sessionKey);
+    const result = await runner.runUserMessage(
+      "discord-dm",
+      env.message.text,
+      routed.decision.sessionKey,
+      undefined,
+      "discord"
+    );
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("pong");
 
-    const persisted = await sessionMgr.peekThreadSession(routed.decision.sessionKey);
+    const persisted = await sessionMgr.peekThreadSession("discord", routed.decision.sessionKey);
     expect(persisted?.sessionId).toBe("dm-session");
   });
 
@@ -222,7 +233,7 @@ describe("Discord end-to-end (envelope → router → runner)", () => {
     // Production must check `auth.allow` before calling runner; we simulate
     // that by simply NOT calling runner here and asserting state didn't
     // change (no new session for that key).
-    const persisted = await sessionMgr.peekThreadSession(routed.decision.sessionKey);
+    const persisted = await sessionMgr.peekThreadSession("discord", routed.decision.sessionKey);
     expect(persisted).toBeNull();
   });
 
@@ -260,16 +271,24 @@ describe("Discord end-to-end (envelope → router → runner)", () => {
     const result = await runner.runUserMessage(
       "discord-thread",
       env.message.text,
-      routed.decision.sessionKey
+      routed.decision.sessionKey,
+      undefined,
+      "discord"
     );
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("thread-reply");
 
     // Same thread, second message: should resume, not create new
     process.env.HERMES_FAKE_REPLY = "thread-reply-2";
-    const result2 = await runner.runUserMessage("discord-thread", "second turn", routed.decision.sessionKey);
+    const result2 = await runner.runUserMessage(
+      "discord-thread",
+      "second turn",
+      routed.decision.sessionKey,
+      undefined,
+      "discord"
+    );
     expect(result2.exitCode).toBe(0);
-    const persisted = await sessionMgr.peekThreadSession(routed.decision.sessionKey);
+    const persisted = await sessionMgr.peekThreadSession("discord", routed.decision.sessionKey);
     expect(persisted?.sessionId).toBe("thread-session-A"); // unchanged
     expect(persisted?.turnCount).toBe(1); // 1 resume after the initial create
   });
@@ -308,12 +327,14 @@ describe("Discord legacy production path (matches commands/discord.ts:649)", () 
     const result = await runner.runUserMessage(
       "discord",
       "[Discord from alice]\nMessage: hi",
-      "discord-thread-legacy-1"
+      "discord-thread-legacy-1",
+      undefined,
+      "discord"
     );
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("legacy-discord-reply");
 
-    const persisted = await sessionMgr.peekThreadSession("discord-thread-legacy-1");
+    const persisted = await sessionMgr.peekThreadSession("discord", "discord-thread-legacy-1");
     expect(persisted?.sessionId).toBe("legacy-discord-session");
   });
 

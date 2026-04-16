@@ -18,10 +18,12 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resetSharedDbCache } from "../../src/state/shared-db";
+import { rmWithRetry } from "../helpers/rm-with-retry";
 
 const ORIG_CWD = process.cwd();
 const FAKE_CLAUDE_ABS = join(ORIG_CWD, "tests", "fixtures", "fake-claude.ts");
@@ -81,14 +83,17 @@ beforeAll(async () => {
   whisper = await import("../../src/whisper");
 });
 
-afterAll(() => {
+afterAll(async () => {
+  // Drop the shared-db cache before removing the tempdir — on Windows a
+  // held-open SQLite handle turns the rmSync into an EBUSY.
+  await resetSharedDbCache();
   process.chdir(ORIG_CWD);
   delete process.env.HERMES_CLAUDE_BIN;
   delete process.env.HERMES_FAKE_REPLY;
   delete process.env.HERMES_FAKE_SESSION_ID;
   delete process.env.HERMES_FAKE_ECHO_PROMPT;
   if (sttServer) sttServer.stop(true);
-  rmSync(tmpProj, { recursive: true, force: true });
+  if (tmpProj) await rmWithRetry(tmpProj);
 });
 
 afterEach(() => {

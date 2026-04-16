@@ -473,7 +473,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
 
   // Recover lost thread from sessions.json (fallback for knownThreads volatility)
   if (isGuild && !knownThreads.has(channelId)) {
-    const persisted = await peekThreadSession(channelId);
+    const persisted = await peekThreadSession("discord", channelId);
     if (persisted) {
       try {
         const ch = await discordApi<{ parent_id?: string }>(config.token, "GET", `/channels/${channelId}`);
@@ -624,7 +624,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
           }
           if (foundId) {
             try {
-              await removeThreadSession(foundId);
+              await removeThreadSession("discord", foundId);
               await discordApi(config.token, "DELETE", `/channels/${foundId}`);
               knownThreads.delete(foundId);
               results.push(`🗑️ **${targetName}** — deleted`);
@@ -686,7 +686,7 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
       transport: discordStatusTransport(config.token),
       channelId,
     });
-    const result = await runUserMessage("discord", prefixedPrompt, threadId, statusSink);
+    const result = await runUserMessage("discord", prefixedPrompt, threadId, statusSink, "discord");
 
     if (result.exitCode !== 0) {
       await sendMessage(config.token, channelId, `Error (exit ${result.exitCode}): ${result.stderr || result.stdout || "Unknown error"}`);
@@ -1063,7 +1063,7 @@ function handleDispatch(token: string, eventName: string, data: any): void {
     case "THREAD_DELETE":
       if (data.id) {
         knownThreads.delete(data.id);
-        removeThreadSession(data.id).catch((err) =>
+        removeThreadSession("discord", data.id).catch((err) =>
           console.error(`[Discord] Failed to cleanup thread session: ${err}`),
         );
         debugLog(`Thread removed: ${data.id}`);
@@ -1074,7 +1074,7 @@ function handleDispatch(token: string, eventName: string, data: any): void {
       if (data.id && data.parent_id) {
         if (data.thread_metadata?.archived) {
           knownThreads.delete(data.id);
-          removeThreadSession(data.id).catch((err) =>
+          removeThreadSession("discord", data.id).catch((err) =>
             console.error(`[Discord] Failed to cleanup archived thread session: ${err}`),
           );
           debugLog(`Thread archived and cleaned up: ${data.id}`);

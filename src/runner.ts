@@ -3,10 +3,11 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { getSession, createSession, incrementTurn, markCompactWarned } from "./sessions";
 import {
-  getThreadSession,
   createThreadSession,
+  getThreadSession,
   incrementThreadTurn,
   markThreadCompactWarned,
+  type ThreadSource,
 } from "./sessionManager";
 import { getSettings, type ModelConfig, type SecurityConfig } from "./config";
 import { buildClockPromptPrefix } from "./timezone";
@@ -545,12 +546,13 @@ async function execClaude(
   prompt: string,
   threadId?: string,
   sink?: StatusSink,
+  source: ThreadSource = "cli",
 ): Promise<RunResult> {
   const logs = logsDir();
   await mkdir(logs, { recursive: true });
 
   const existing = threadId
-    ? await getThreadSession(threadId)
+    ? await getThreadSession(source, threadId)
     : await getSession();
   const isNew = !existing;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -686,7 +688,7 @@ async function execClaude(
       sessionId = exec.sessionId;
       stdout = exec.finalResult ?? "";
       if (threadId) {
-        await createThreadSession(threadId, sessionId);
+        await createThreadSession(source, threadId, sessionId);
         console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
       } else {
         await createSession(sessionId);
@@ -698,7 +700,7 @@ async function execClaude(
         sessionId = json.session_id;
         stdout = json.result ?? "";
         if (threadId) {
-          await createThreadSession(threadId, sessionId);
+          await createThreadSession(source, threadId, sessionId);
           console.log(`[${new Date().toLocaleTimeString()}] Thread session created: ${sessionId} (thread ${threadId.slice(0, 8)})`);
         } else {
           await createSession(sessionId);
@@ -779,7 +781,7 @@ async function execClaude(
       });
 
       if (retryExec.exitCode === 0) {
-        const count = threadId ? await incrementThreadTurn(threadId) : await incrementTurn();
+        const count = threadId ? await incrementThreadTurn(source, threadId) : await incrementTurn();
         console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${count} (after compact + retry)`);
       }
       return retryResult;
@@ -788,12 +790,12 @@ async function execClaude(
 
   // --- Turn tracking & compact warning ---
   if (exitCode === 0 && !isNew) {
-    const turnCount = threadId ? await incrementThreadTurn(threadId) : await incrementTurn();
+    const turnCount = threadId ? await incrementThreadTurn(source, threadId) : await incrementTurn();
     console.log(`[${new Date().toLocaleTimeString()}] Turn count: ${turnCount}${threadId ? ` (thread ${threadId.slice(0, 8)})` : ""}`);
 
     if (turnCount >= COMPACT_WARN_THRESHOLD && existing && !existing.compactWarned) {
       if (threadId) {
-        await markThreadCompactWarned(threadId);
+        await markThreadCompactWarned(source, threadId);
       } else {
         await markCompactWarned();
       }
@@ -809,8 +811,9 @@ export async function run(
   prompt: string,
   threadId?: string,
   sink?: StatusSink,
+  source: ThreadSource = "cli",
 ): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, threadId, sink), threadId);
+  return enqueue(() => execClaude(name, prompt, threadId, sink, source), threadId);
 }
 
 function prefixUserMessageWithClock(prompt: string): string {
@@ -829,8 +832,9 @@ export async function runUserMessage(
   prompt: string,
   threadId?: string,
   sink?: StatusSink,
+  source: ThreadSource = "cli",
 ): Promise<RunResult> {
-  return run(name, prefixUserMessageWithClock(prompt), threadId, sink);
+  return run(name, prefixUserMessageWithClock(prompt), threadId, sink, source);
 }
 
 /**

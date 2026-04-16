@@ -8,6 +8,7 @@ export { openDb, closeDb, type Database } from "./db";
 export { applyMigrations } from "./bootstrap";
 export { importLegacyJson } from "./import-json";
 export { bootstrapState } from "./bootstrap-state";
+export { getSharedDb, resetSharedDbCache } from "./shared-db";
 
 export * as sessionsRepo from "./repos/sessions";
 export * as messagesRepo from "./repos/messages";
