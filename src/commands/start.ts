@@ -1,7 +1,7 @@
 import { mkdir, unlink, writeFile } from "fs/promises";
-import { join } from "path";
 import { fileURLToPath } from "url";
 import { matchesBetween, nextCronMatch } from "../cron";
+import { claudeDir, projectClaudeSettingsFile, statuslineFile } from "../paths";
 import {
   type HeartbeatConfig,
   initConfig,
@@ -23,10 +23,6 @@ import {
 import { type StateData, writeState } from "../statusline";
 import { getDayAndMinuteAtOffset } from "../timezone";
 
-const CLAUDE_DIR = join(process.cwd(), ".claude");
-const HEARTBEAT_DIR = join(CLAUDE_DIR, "hermes");
-const STATUSLINE_FILE = join(CLAUDE_DIR, "statusline.cjs");
-const CLAUDE_SETTINGS_FILE = join(CLAUDE_DIR, "settings.json");
 const PREFLIGHT_SCRIPT = fileURLToPath(new URL("../preflight.ts", import.meta.url));
 
 async function runMigrationIfAny(): Promise<void> {
@@ -196,12 +192,12 @@ function nextAllowedHeartbeatAt(
 }
 
 async function setupStatusline() {
-  await mkdir(CLAUDE_DIR, { recursive: true });
-  await writeFile(STATUSLINE_FILE, STATUSLINE_SCRIPT);
+  await mkdir(claudeDir(), { recursive: true });
+  await writeFile(statuslineFile(), STATUSLINE_SCRIPT);
 
   let settings: Record<string, unknown> = {};
   try {
-    settings = await Bun.file(CLAUDE_SETTINGS_FILE).json();
+    settings = await Bun.file(projectClaudeSettingsFile()).json();
   } catch {
     // file doesn't exist or isn't valid JSON
   }
@@ -209,20 +205,20 @@ async function setupStatusline() {
     type: "command",
     command: "node .claude/statusline.cjs",
   };
-  await writeFile(CLAUDE_SETTINGS_FILE, JSON.stringify(settings, null, 2) + "\n");
+  await writeFile(projectClaudeSettingsFile(), JSON.stringify(settings, null, 2) + "\n");
 }
 
 async function teardownStatusline() {
   try {
-    const settings = await Bun.file(CLAUDE_SETTINGS_FILE).json();
+    const settings = await Bun.file(projectClaudeSettingsFile()).json();
     delete settings.statusLine;
-    await writeFile(CLAUDE_SETTINGS_FILE, JSON.stringify(settings, null, 2) + "\n");
+    await writeFile(projectClaudeSettingsFile(), JSON.stringify(settings, null, 2) + "\n");
   } catch {
     // file doesn't exist, nothing to clean up
   }
 
   try {
-    await unlink(STATUSLINE_FILE);
+    await unlink(statuslineFile());
   } catch {
     // already gone
   }

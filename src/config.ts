@@ -156,6 +156,7 @@ export interface SttConfig {
 }
 
 let cached: Settings | null = null;
+let cachedPath: string | null = null;
 
 export async function initConfig(): Promise<void> {
   await mkdir(hermesDir(), { recursive: true });
@@ -343,18 +344,22 @@ function extractDiscordUserIds(rawText: string): string[] {
 }
 
 export async function loadSettings(): Promise<Settings> {
-  if (cached) return cached;
-  const rawText = await Bun.file(settingsFile()).text();
+  const path = settingsFile();
+  if (cached && cachedPath === path) return cached;
+  const rawText = await Bun.file(path).text();
   const raw = JSON.parse(rawText);
   cached = parseSettings(raw, extractDiscordUserIds(rawText));
+  cachedPath = path;
   return cached;
 }
 
 /** Re-read settings from disk, bypassing cache. */
 export async function reloadSettings(): Promise<Settings> {
-  const rawText = await Bun.file(settingsFile()).text();
+  const path = settingsFile();
+  const rawText = await Bun.file(path).text();
   const raw = JSON.parse(rawText);
   cached = parseSettings(raw, extractDiscordUserIds(rawText));
+  cachedPath = path;
   return cached;
 }
 

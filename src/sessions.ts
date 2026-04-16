@@ -11,11 +11,14 @@ export interface GlobalSession {
 }
 
 let current: GlobalSession | null = null;
+let currentPath: string | null = null;
 
 async function loadSession(): Promise<GlobalSession | null> {
-  if (current) return current;
+  const path = sessionFile();
+  if (current && currentPath === path) return current;
   try {
-    current = await Bun.file(sessionFile()).json();
+    current = await Bun.file(path).json();
+    currentPath = path;
     return current;
   } catch {
     return null;
@@ -23,8 +26,10 @@ async function loadSession(): Promise<GlobalSession | null> {
 }
 
 async function saveSession(session: GlobalSession): Promise<void> {
+  const path = sessionFile();
   current = session;
-  await Bun.write(sessionFile(), JSON.stringify(session, null, 2) + "\n");
+  currentPath = path;
+  await Bun.write(path, JSON.stringify(session, null, 2) + "\n");
 }
 
 /** Returns the existing session or null. Never creates one. */
@@ -77,6 +82,7 @@ export async function markCompactWarned(): Promise<void> {
 
 export async function resetSession(): Promise<void> {
   current = null;
+  currentPath = null;
   try {
     await unlink(sessionFile());
   } catch {
@@ -104,6 +110,7 @@ export async function backupSession(): Promise<string | null> {
   const backupPath = join(hermesDir(), backupName);
   await rename(sessionFile(), backupPath);
   current = null;
+  currentPath = null;
 
   return backupName;
 }

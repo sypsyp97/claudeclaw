@@ -19,15 +19,16 @@ import {
   LEGACY_MANAGED_BLOCK_START,
   MANAGED_BLOCK_END,
   MANAGED_BLOCK_START,
+  legacyProjectClaudeMdFile,
   logsDir,
+  projectClaudeMdFile,
   promptsDir,
 } from "./paths";
 
-// Resolve prompts relative to the hermes installation, not the project dir
+// These are anchored to the hermes installation (via import.meta.dir), not the
+// project's cwd, so they are safe to freeze at module load.
 const PROMPTS_DIR = join(import.meta.dir, "..", "prompts");
 const HEARTBEAT_PROMPT_FILE = join(PROMPTS_DIR, "heartbeat", "HEARTBEAT.md");
-const PROJECT_CLAUDE_MD = join(process.cwd(), "CLAUDE.md");
-const LEGACY_PROJECT_CLAUDE_MD = join(process.cwd(), ".claude", "CLAUDE.md");
 
 /**
  * Compact configuration.
@@ -321,18 +322,20 @@ async function runClaudeOnceStreaming(
   }
 }
 
-const PROJECT_DIR = process.cwd();
-
-const DIR_SCOPE_PROMPT = [
-  `CRITICAL SECURITY CONSTRAINT: You are scoped to the project directory: ${PROJECT_DIR}`,
-  "You MUST NOT read, write, edit, or delete any file outside this directory.",
-  "You MUST NOT run bash commands that modify anything outside this directory (no cd /, no /etc, no ~/, no ../.. escapes).",
-  "If a request requires accessing files outside the project, refuse and explain why.",
-].join("\n");
+function dirScopePrompt(): string {
+  return [
+    `CRITICAL SECURITY CONSTRAINT: You are scoped to the project directory: ${process.cwd()}`,
+    "You MUST NOT read, write, edit, or delete any file outside this directory.",
+    "You MUST NOT run bash commands that modify anything outside this directory (no cd /, no /etc, no ~/, no ../.. escapes).",
+    "If a request requires accessing files outside the project, refuse and explain why.",
+  ].join("\n");
+}
 
 export async function ensureProjectClaudeMd(): Promise<void> {
+  const projectClaudeMd = projectClaudeMdFile();
+  const legacyClaudeMd = legacyProjectClaudeMdFile();
   // Preflight-only initialization: never rewrite an existing project CLAUDE.md.
-  if (existsSync(PROJECT_CLAUDE_MD)) return;
+  if (existsSync(projectClaudeMd)) return;
 
   const promptContent = (await loadPrompts()).trim();
   // We always WRITE the new hermes-named markers. The dual-read regex below
@@ -343,9 +346,9 @@ export async function ensureProjectClaudeMd(): Promise<void> {
 
   let content = "";
 
-  if (existsSync(LEGACY_PROJECT_CLAUDE_MD)) {
+  if (existsSync(legacyClaudeMd)) {
     try {
-      const legacy = await readFile(LEGACY_PROJECT_CLAUDE_MD, "utf8");
+      const legacy = await readFile(legacyClaudeMd, "utf8");
       content = legacy.trim();
     } catch (e) {
       console.error(`[${new Date().toLocaleTimeString()}] Failed to read legacy .claude/CLAUDE.md:`, e);
@@ -369,7 +372,7 @@ export async function ensureProjectClaudeMd(): Promise<void> {
       : `${managedBlock}\n`;
 
   try {
-    await writeFile(PROJECT_CLAUDE_MD, merged, "utf8");
+    await writeFile(projectClaudeMd, merged, "utf8");
   } catch (e) {
     console.error(`[${new Date().toLocaleTimeString()}] Failed to write project CLAUDE.md:`, e);
   }
@@ -588,16 +591,17 @@ async function execClaude(
   if (promptContent) appendParts.push(promptContent);
 
   // Load the project's CLAUDE.md if it exists
-  if (existsSync(PROJECT_CLAUDE_MD)) {
+  const projectClaudeMd = projectClaudeMdFile();
+  if (existsSync(projectClaudeMd)) {
     try {
-      const claudeMd = await Bun.file(PROJECT_CLAUDE_MD).text();
+      const claudeMd = await Bun.file(projectClaudeMd).text();
       if (claudeMd.trim()) appendParts.push(claudeMd.trim());
     } catch (e) {
       console.error(`[${new Date().toLocaleTimeString()}] Failed to read project CLAUDE.md:`, e);
     }
   }
 
-  if (security.level !== "unrestricted") appendParts.push(DIR_SCOPE_PROMPT);
+  if (security.level !== "unrestricted") appendParts.push(dirScopePrompt());
   if (appendParts.length > 0) {
     args.push("--append-system-prompt", appendParts.join("\n\n"));
   }

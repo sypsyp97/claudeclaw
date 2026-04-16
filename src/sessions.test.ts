@@ -245,3 +245,33 @@ describe("backupSession", () => {
     expect(third).toBe("session_3.backup");
   });
 });
+
+describe("cache is keyed by resolved session file path (cwd-aware)", () => {
+  // If the cache were not path-keyed, a process.chdir into a second workspace
+  // would return the first workspace's session forever.
+  test("chdir to a second workspace returns its own session, not the first", async () => {
+    await sessions.createSession("ws-A");
+    const a = await sessions.getSession();
+    expect(a?.sessionId).toBe("ws-A");
+
+    const secondRoot = await mkdtemp(join(tmpdir(), "hermes-session-B-"));
+    await mkdir(join(secondRoot, ".claude", "hermes"), { recursive: true });
+    const firstRoot = process.cwd();
+    try {
+      process.chdir(secondRoot);
+      const fresh = await sessions.getSession();
+      expect(fresh).toBeNull();
+
+      await sessions.createSession("ws-B");
+      const b = await sessions.getSession();
+      expect(b?.sessionId).toBe("ws-B");
+    } finally {
+      process.chdir(firstRoot);
+      await rm(secondRoot, { recursive: true, force: true });
+    }
+
+    // Back in workspace A the original session must still resolve.
+    const backInA = await sessions.getSession();
+    expect(backInA?.sessionId).toBe("ws-A");
+  });
+});

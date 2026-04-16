@@ -104,6 +104,26 @@ export function migrationMarkerFile(cwd: string = process.cwd()): string {
   return join(hermesDir(cwd), "MIGRATED.json");
 }
 
+export function projectClaudeMdFile(cwd: string = process.cwd()): string {
+  return join(cwd, "CLAUDE.md");
+}
+
+export function legacyProjectClaudeMdFile(cwd: string = process.cwd()): string {
+  return join(cwd, ".claude", "CLAUDE.md");
+}
+
+export function claudeDir(cwd: string = process.cwd()): string {
+  return join(cwd, ".claude");
+}
+
+export function projectClaudeSettingsFile(cwd: string = process.cwd()): string {
+  return join(claudeDir(cwd), "settings.json");
+}
+
+export function statuslineFile(cwd: string = process.cwd()): string {
+  return join(claudeDir(cwd), "statusline.cjs");
+}
+
 /** Managed-block markers injected into the project CLAUDE.md. */
 export const MANAGED_BLOCK_START = "<!-- hermes:managed:start -->";
 export const MANAGED_BLOCK_END = "<!-- hermes:managed:end -->";
