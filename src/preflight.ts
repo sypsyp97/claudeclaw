@@ -80,7 +80,7 @@ function run(cmd: string, opts: ExecSyncOptions = {}): string {
   return (result ?? "").toString().trim();
 }
 
-function readJSON<T>(filePath: string, fallback: T): T {
+export function readJSON<T>(filePath: string, fallback: T): T {
   try {
     return JSON.parse(readFileSync(filePath, "utf-8"));
   } catch {
@@ -88,7 +88,7 @@ function readJSON<T>(filePath: string, fallback: T): T {
   }
 }
 
-function writeJSON(filePath: string, data: unknown): void {
+export function writeJSON(filePath: string, data: unknown): void {
   mkdirSync(dirname(filePath), { recursive: true });
   writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n");
 }
@@ -113,25 +113,25 @@ function detectPkgManager(): string | null {
   return null;
 }
 
-function extractRepo(url: string): string {
+export function extractRepo(url: string): string {
   return url.replace(/.*github\.com[:/]/, "").replace(/\.git$/, "");
 }
 
-function isCached(pluginKey: string): boolean {
-  const instData = readJSON<InstalledPlugins>(INST_FILE, { version: 2, plugins: {} });
+export function isCached(pluginKey: string, instFile: string = INST_FILE): boolean {
+  const instData = readJSON<InstalledPlugins>(instFile, { version: 2, plugins: {} });
   const entries = instData.plugins[pluginKey];
   if (!entries || entries.length === 0) return false;
   return entries.some((e) => existsSync(e.installPath));
 }
 
-function isEnabledInProject(pluginKey: string, projectPath: string): boolean {
+export function isEnabledInProject(pluginKey: string, projectPath: string): boolean {
   const projSettings = join(projectPath, ".claude", "settings.json");
   const settings = readJSON<Record<string, unknown>>(projSettings, {});
   const enabled = settings.enabledPlugins as Record<string, boolean> | undefined;
   return !!enabled?.[pluginKey];
 }
 
-function enableInProject(pluginKey: string, projectPath: string): void {
+export function enableInProject(pluginKey: string, projectPath: string): void {
   const projSettings = join(projectPath, ".claude", "settings.json");
   const settings = readJSON<Record<string, unknown>>(projSettings, {});
   if (!settings.enabledPlugins) settings.enabledPlugins = {};
