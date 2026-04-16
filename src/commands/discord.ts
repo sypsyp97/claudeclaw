@@ -498,8 +498,16 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
     `Handle message channel=${channelId} from=${userId} reason=${triggerReason} text="${content.slice(0, 80)}"`,
   );
 
-  // Authorization check
-  if (config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(userId)) {
+  // Authorization check (fail-closed — empty allowlist rejects everyone).
+  if (config.allowedUserIds.length === 0) {
+    if (isDM) {
+      await sendMessage(config.token, channelId, "Unauthorized: no allowlist configured.");
+    } else {
+      debugLog(`Skip guild message channel=${channelId} reason=no_allowlist_configured`);
+    }
+    return;
+  }
+  if (!config.allowedUserIds.includes(userId)) {
     if (isDM) {
       await sendMessage(config.token, channelId, "Unauthorized.");
     } else {
@@ -706,7 +714,8 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
   const config = getSettings().discord;
   const actorId = interaction.member?.user?.id ?? interaction.user?.id;
 
-  if (config.allowedUserIds.length > 0 && (!actorId || !config.allowedUserIds.includes(actorId))) {
+  // Fail-closed: empty allowlist rejects every slash-command interaction.
+  if (config.allowedUserIds.length === 0 || !actorId || !config.allowedUserIds.includes(actorId)) {
     await respondToInteraction(interaction, { content: "Unauthorized.", flags: 64 });
     return;
   }

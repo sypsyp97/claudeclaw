@@ -1,14 +1,62 @@
+import { initConfig, loadSettings } from "../config";
 import { runUserMessage } from "../runner";
 import { getSession } from "../sessions";
-import { loadSettings, initConfig } from "../config";
+
+/**
+ * Parse a `--to user_id` flag out of argv. Returns the ID string (without the
+ * flag) or null if absent. Multiple `--to` values are not allowed — one
+ * invocation, one recipient.
+ */
+function parseToFlag(args: string[]): { to: string | null; rest: string[] } {
+  const rest: string[] = [];
+  let to: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--to") {
+      if (to !== null) {
+        console.error("send: --to may only be given once");
+        process.exit(1);
+      }
+      to = args[++i] ?? "";
+      if (!to) {
+        console.error("send: --to requires a user id");
+        process.exit(1);
+      }
+      continue;
+    }
+    rest.push(args[i]);
+  }
+  return { to, rest };
+}
 
 export async function send(args: string[]) {
-  const telegramFlag = args.includes("--telegram");
-  const discordFlag = args.includes("--discord");
-  const message = args.filter((a) => a !== "--telegram" && a !== "--discord").join(" ");
+  const { to, rest } = parseToFlag(args);
+  const telegramFlag = rest.includes("--telegram");
+  const discordFlag = rest.includes("--discord");
+  const message = rest
+    .filter((a) => a !== "--telegram" && a !== "--discord")
+    .join(" ");
 
   if (!message) {
-    console.error("Usage: claude-hermes send <message> [--telegram] [--discord]");
+    console.error(
+      "Usage: claude-hermes send <message> [--telegram|--discord --to <user_id>]",
+    );
+    process.exit(1);
+  }
+
+  if (telegramFlag && discordFlag) {
+    console.error(
+      "send: pick one of --telegram or --discord, not both (use two invocations if you need both channels)",
+    );
+    process.exit(1);
+  }
+
+  const wantsChannel = telegramFlag || discordFlag;
+  if (wantsChannel && !to) {
+    console.error(
+      "send: --to <user_id> is required when forwarding to a channel. "
+        + "Broadcast-to-all was removed — targeting every allowed user with "
+        + "one command is too dangerous.",
+    );
     process.exit(1);
   }
 
@@ -24,78 +72,84 @@ export async function send(args: string[]) {
   const result = await runUserMessage("send", message);
   console.log(result.stdout);
 
-  if (telegramFlag) {
-    const settings = await loadSettings();
-    const token = settings.telegram.token;
-    const userIds = settings.telegram.allowedUserIds;
+  if (!wantsChannel) {
+    if (result.exitCode !== 0) process.exit(result.exitCode);
+    return;
+  }
 
-    if (!token || userIds.length === 0) {
-      console.error("Telegram is not configured in settings.");
+  const settings = await loadSettings();
+  const text = result.exitCode === 0
+    ? result.stdout || "(empty)"
+    : `error (exit ${result.exitCode}): ${result.stderr || "Unknown"}`;
+
+  if (telegramFlag) {
+    const token = settings.telegram.token;
+    if (!token) {
+      console.error("Telegram token is not configured in settings.");
       process.exit(1);
     }
-
-    const text = result.exitCode === 0
-      ? result.stdout || "(empty)"
-      : `error (exit ${result.exitCode}): ${result.stderr || "Unknown"}`;
-
-    for (const userId of userIds) {
-      const res = await fetch(
-        `https://api.telegram.org/bot${token}/sendMessage`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: userId, text }),
-        }
+    if (!settings.telegram.allowedUserIds.includes(Number(to))) {
+      console.error(
+        `send: --to ${to} is not in telegram.allowedUserIds; add them to settings first.`,
       );
-      if (!res.ok) {
-        console.error(`Failed to send to Telegram user ${userId}: ${res.statusText}`);
-      }
+      process.exit(1);
     }
-    console.log("Sent to Telegram.");
+    const res = await fetch(
+      `https://api.telegram.org/bot${token}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: to, text }),
+      },
+    );
+    if (!res.ok) {
+      console.error(`Failed to send to Telegram user ${to}: ${res.statusText}`);
+      process.exit(1);
+    }
+    console.log(`Sent to Telegram user ${to}.`);
   }
 
   if (discordFlag) {
-    const settings = await loadSettings();
     const dToken = settings.discord.token;
-    const dUserIds = settings.discord.allowedUserIds;
-
-    if (!dToken || dUserIds.length === 0) {
-      console.error("Discord is not configured in settings.");
+    if (!dToken) {
+      console.error("Discord token is not configured in settings.");
       process.exit(1);
     }
-
-    const dText = result.exitCode === 0
-      ? result.stdout || "(empty)"
-      : `error (exit ${result.exitCode}): ${result.stderr || "Unknown"}`;
-
-    for (const userId of dUserIds) {
-      // Create DM channel
-      const dmRes = await fetch("https://discord.com/api/v10/users/@me/channels", {
-        method: "POST",
-        headers: {
-          Authorization: `Bot ${dToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ recipient_id: userId }),
-      });
-      if (!dmRes.ok) {
-        console.error(`Failed to create DM for Discord user ${userId}: ${dmRes.statusText}`);
-        continue;
-      }
-      const { id: channelId } = (await dmRes.json()) as { id: string };
-      const msgRes = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bot ${dToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ content: dText.slice(0, 2000) }),
-      });
-      if (!msgRes.ok) {
-        console.error(`Failed to send to Discord user ${userId}: ${msgRes.statusText}`);
-      }
+    if (!settings.discord.allowedUserIds.includes(to!)) {
+      console.error(
+        `send: --to ${to} is not in discord.allowedUserIds; add them to settings first.`,
+      );
+      process.exit(1);
     }
-    console.log("Sent to Discord.");
+    const dmRes = await fetch("https://discord.com/api/v10/users/@me/channels", {
+      method: "POST",
+      headers: {
+        Authorization: `Bot ${dToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ recipient_id: to }),
+    });
+    if (!dmRes.ok) {
+      console.error(`Failed to create DM for Discord user ${to}: ${dmRes.statusText}`);
+      process.exit(1);
+    }
+    const { id: channelId } = (await dmRes.json()) as { id: string };
+    const msgRes = await fetch(
+      `https://discord.com/api/v10/channels/${channelId}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bot ${dToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ content: text.slice(0, 2000) }),
+      },
+    );
+    if (!msgRes.ok) {
+      console.error(`Failed to send to Discord user ${to}: ${msgRes.statusText}`);
+      process.exit(1);
+    }
+    console.log(`Sent to Discord user ${to}.`);
   }
 
   if (result.exitCode !== 0) process.exit(result.exitCode);

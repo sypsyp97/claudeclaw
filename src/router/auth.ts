@@ -24,7 +24,10 @@ export function checkAuth(envelope: Envelope, policy: AuthPolicy): AuthDecision 
   if (admin) return { allow: true, reason: "admin", isAdmin: true };
 
   if (policy.allowedUserIds.length === 0) {
-    return { allow: true, reason: "no-allowlist-configured", isAdmin: false };
+    // Fail-closed: an empty allowlist means "not configured yet", not "open
+    // relay". A messaging bridge exposed to the internet cannot default to
+    // accepting anyone.
+    return { allow: false, reason: "no-allowlist-configured", isAdmin: false };
   }
   if (policy.allowedUserIds.includes(userId)) {
     return { allow: true, reason: "user-in-allowlist", isAdmin: false };

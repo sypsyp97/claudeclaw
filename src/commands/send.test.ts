@@ -165,20 +165,19 @@ describe("send command", () => {
     expect(result.stdout).toContain("pong");
   }, 40_000);
 
-  test("--telegram without configured token: exits 1", async () => {
+  test("--telegram without --to: exits 1 with a 'target required' message (pre-network)", async () => {
     const dir = await freshProject({ withSession: true });
     dirsToClean.push(dir);
 
     const result = await runSend(dir, ["hello", "--telegram"], {
       HERMES_FAKE_REPLY: "pong",
     });
-    // Claude call succeeds, then telegram block errors because no token is
-    // configured in settings.json.
     expect(result.exitCode).toBe(1);
-    expect(result.stderr.toLowerCase()).toContain("telegram");
+    // Refuses to broadcast — fails before hitting the Telegram network layer.
+    expect(result.stderr.toLowerCase()).toContain("--to");
   }, 30_000);
 
-  test("--discord without configured token: exits 1", async () => {
+  test("--discord without --to: exits 1 with a 'target required' message", async () => {
     const dir = await freshProject({ withSession: true });
     dirsToClean.push(dir);
 
@@ -186,6 +185,26 @@ describe("send command", () => {
       HERMES_FAKE_REPLY: "pong",
     });
     expect(result.exitCode).toBe(1);
-    expect(result.stderr.toLowerCase()).toContain("discord");
+    expect(result.stderr.toLowerCase()).toContain("--to");
+  }, 30_000);
+
+  test("--telegram --to on unconfigured token: exits 1 with a telegram-flavored error", async () => {
+    const dir = await freshProject({ withSession: true });
+    dirsToClean.push(dir);
+
+    const result = await runSend(dir, ["hello", "--telegram", "--to", "123"], { HERMES_FAKE_REPLY: "pong" });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toLowerCase()).toContain("telegram");
+  }, 30_000);
+
+  test("--telegram --discord together: exits 1 with a mutually-exclusive error", async () => {
+    const dir = await freshProject({ withSession: true });
+    dirsToClean.push(dir);
+
+    const result = await runSend(dir, ["hello", "--telegram", "--discord", "--to", "1"], {
+      HERMES_FAKE_REPLY: "pong",
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toLowerCase()).toContain("not both");
   }, 30_000);
 });

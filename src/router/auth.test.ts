@@ -15,10 +15,13 @@ function makeEnvelope(userId: string, isAdmin = false): Envelope {
 }
 
 describe("checkAuth", () => {
-  test("empty allowlist → allow with reason no-allowlist-configured", () => {
+  test("empty allowlist → DENY (fail-closed) with reason no-allowlist-configured", () => {
+    // An empty allowlist on a bridge exposed to the internet is fail-open;
+    // the daemon now refuses traffic in that state so a misconfigured
+    // settings.json cannot accidentally turn the bot into an open relay.
     const policy: AuthPolicy = { allowedUserIds: [] };
     const decision = checkAuth(makeEnvelope("U1"), policy);
-    expect(decision.allow).toBe(true);
+    expect(decision.allow).toBe(false);
     expect(decision.reason).toBe("no-allowlist-configured");
     expect(decision.isAdmin).toBe(false);
   });

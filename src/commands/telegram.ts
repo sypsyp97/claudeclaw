@@ -621,11 +621,28 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
     `Handle message chat=${chatId} type=${chatType} from=${userId ?? "unknown"} reason=${triggerReason} text="${(text ?? "").slice(0, 80)}"`
   );
 
-  if (userId && config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(userId)) {
+  // Fail-closed auth: with an empty allowlist we treat the bridge as
+  // "not configured yet" and refuse everyone. Previously an unset list
+  // meant allow-all, so a half-configured bot acted as an open relay.
+  if (config.allowedUserIds.length === 0) {
+    if (isPrivate && userId !== undefined) {
+      await sendMessage(
+        config.token,
+        chatId,
+        "Unauthorized: no allowlist configured.",
+      );
+    } else {
+      debugLog(`Skip message chat=${chatId} reason=no_allowlist_configured`);
+    }
+    return;
+  }
+  if (!userId || !config.allowedUserIds.includes(userId)) {
     if (isPrivate) {
       await sendMessage(config.token, chatId, "Unauthorized.");
     } else {
-      console.log(`[Telegram] Ignored group message from unauthorized user ${userId} in chat ${chatId}`);
+      console.log(
+        `[Telegram] Ignored group message from unauthorized user ${userId ?? "unknown"} in chat ${chatId}`,
+      );
       debugLog(`Skip group message chat=${chatId} from=${userId} reason=unauthorized_user`);
     }
     return;

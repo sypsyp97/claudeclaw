@@ -510,10 +510,14 @@ export async function start(args: string[] = []) {
         })
         .then((r) => {
           if (!r) return;
-          const shouldForward =
-            currentSettings.heartbeat.forwardToTelegram || !r.stdout.trim().startsWith("HEARTBEAT_OK");
-          if (shouldForward) {
+          // "Routine" heartbeats (the OK marker) only forward when the user
+          // explicitly opted the channel into heartbeat traffic. Non-routine
+          // updates always forward — they exist precisely to be seen.
+          const isRoutine = r.stdout.trim().startsWith("HEARTBEAT_OK");
+          if (!isRoutine || currentSettings.heartbeat.forwardToTelegram) {
             forwardToTelegram("", r);
+          }
+          if (!isRoutine || currentSettings.heartbeat.forwardToDiscord) {
             forwardToDiscord("", r);
           }
         });
