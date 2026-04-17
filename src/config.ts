@@ -98,10 +98,12 @@ export interface SecurityConfig {
   allowedTools: string[];
   disallowedTools: string[];
   /**
-   * Pass `--dangerously-skip-permissions` to the Claude CLI. This suppresses
-   * every interactive permission prompt and is required for unattended
-   * operation, but it also removes the last safety net if the model decides
-   * to run something destructive. Off by default — opt in consciously.
+   * Force `--dangerously-skip-permissions` on top of whatever the level
+   * would derive. Acts as an OR override: `strict` / `moderate` /
+   * `unrestricted` already auto-emit bypass (the daemon is headless — a
+   * prompt means a hang), so this flag only changes behavior for `locked`,
+   * where it lets the caller run unattended Edit/Write via a narrow
+   * `allowedTools` list. Off by default.
    */
   bypassPermissions: boolean;
 }

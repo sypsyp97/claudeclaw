@@ -414,9 +414,16 @@ export async function ensureProjectClaudeMd(): Promise<void> {
  * Translate a `SecurityConfig` into the Claude CLI flags that enforce it.
  *
  * Contract:
- *  - `--dangerously-skip-permissions` is only emitted when the caller set
- *    `bypassPermissions: true`. It is no longer unconditional — hermes has
- *    to opt into the nuclear option explicitly.
+ *  - `--dangerously-skip-permissions` is auto-emitted for every level whose
+ *    intended tool surface can trigger permission prompts (`strict`,
+ *    `moderate`, `unrestricted`). Hermes is always headless — heartbeat,
+ *    cron jobs, Telegram, Discord — so a prompt means the tool hangs or
+ *    fails silently. The only level that runs without bypass is `locked`,
+ *    because Read/Grep/Glob never prompt.
+ *  - `bypassPermissions: true` is an OR override: it forces bypass on top
+ *    of the level-derived default. Useful if someone pins `locked` for its
+ *    tool surface but still wants unattended Edit/Write via a narrow
+ *    caller-supplied `allowedTools`.
  *  - `allowedTools` / `disallowedTools` are emitted as comma-joined lists
  *    (`Read,Grep,Glob`), not space-joined. Space-joined lists are silently
  *    treated by the CLI as a single tool name and fail closed / open
@@ -433,7 +440,12 @@ export async function ensureProjectClaudeMd(): Promise<void> {
  */
 export function buildSecurityArgs(security: SecurityConfig): string[] {
   const args: string[] = [];
-  if (security.bypassPermissions) {
+
+  const levelNeedsBypass =
+    security.level === "strict" ||
+    security.level === "moderate" ||
+    security.level === "unrestricted";
+  if (levelNeedsBypass || security.bypassPermissions) {
     args.push("--dangerously-skip-permissions");
   }
 
@@ -460,6 +472,31 @@ export function buildSecurityArgs(security: SecurityConfig): string[] {
   }
 
   return args;
+}
+
+/**
+ * Strip the parent Claude Code signalling vars from an env before handing
+ * it to a spawned `claude` subprocess.
+ *
+ * Removes:
+ *  - `CLAUDECODE` — the legacy "you are nested under Claude Code" flag.
+ *  - `CLAUDE_CODE_*` (all) — entrypoint / exec path / any future IPC var.
+ *    Prefix-stripping guards against new vars that a later Claude Code
+ *    release might start setting.
+ *
+ * Preserves everything else, including unrelated `CLAUDE_*` vars (e.g.
+ * provider credentials) and `ANTHROPIC_*` tokens — stripping those would
+ * break auth.
+ */
+export function cleanChildEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined) continue;
+    if (k === "CLAUDECODE") continue;
+    if (k.startsWith("CLAUDE_CODE_")) continue;
+    out[k] = v;
+  }
+  return out;
 }
 
 /** Load and concatenate all prompt files from the prompts/ directory. */
@@ -536,8 +573,7 @@ export async function compactCurrentSession(): Promise<{ success: boolean; messa
 
   const settings = getSettings();
   const securityArgs = buildSecurityArgs(settings.security);
-  const { CLAUDECODE: _, ...cleanEnv } = process.env;
-  const baseEnv = { ...cleanEnv } as Record<string, string>;
+  const baseEnv = cleanChildEnv(process.env);
   const timeoutMs = (settings as any).sessionTimeoutMs || CLAUDE_TIMEOUT_MS;
 
   const ok = await runCompact(
@@ -639,9 +675,9 @@ async function execClaude(
     args.push("--append-system-prompt", appendParts.join("\n\n"));
   }
 
-  // Strip CLAUDECODE env var so child claude processes don't think they're nested
-  const { CLAUDECODE: _, ...cleanEnv } = process.env;
-  const baseEnv = { ...cleanEnv } as Record<string, string>;
+  // Strip parent Claude Code signalling vars so the child boots like a
+  // fresh terminal invocation (see cleanChildEnv for the full rationale).
+  const baseEnv = cleanChildEnv(process.env);
 
   let exec: {
     rawStdout: string;

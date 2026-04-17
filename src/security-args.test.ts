@@ -12,22 +12,46 @@ function cfg(overrides: Partial<SecurityConfig> = {}): SecurityConfig {
   };
 }
 
-describe("buildSecurityArgs — bypass flag is opt-in", () => {
-  test("default config does NOT emit --dangerously-skip-permissions", () => {
-    const args = buildSecurityArgs(cfg());
+describe("buildSecurityArgs — headless bypass follows the level", () => {
+  // Hermes is always headless (heartbeat / Telegram / Discord / cron — no human
+  // to click "allow"). If the CLI's permission gate fires, tool use hangs or
+  // fails silently. So every level whose *intent* includes write-capable tools
+  // must auto-emit --dangerously-skip-permissions. The only level that can run
+  // without bypass is `locked`, because Read/Grep/Glob never prompt.
+
+  test("locked default: no bypass (Read/Grep/Glob don't prompt)", () => {
+    const args = buildSecurityArgs(cfg({ level: "locked" }));
     expect(args).not.toContain("--dangerously-skip-permissions");
   });
 
-  test("only emits --dangerously-skip-permissions when bypassPermissions=true", () => {
-    const args = buildSecurityArgs(cfg({ bypassPermissions: true }));
+  test("strict auto-emits --dangerously-skip-permissions", () => {
+    const args = buildSecurityArgs(cfg({ level: "strict" }));
     expect(args).toContain("--dangerously-skip-permissions");
   });
 
-  test("bypass=false + level=unrestricted still does NOT emit the bypass flag", () => {
-    // Level is about tool surface, not permission prompts. The only knob that
-    // removes the prompt is the explicit bypass flag.
+  test("moderate auto-emits --dangerously-skip-permissions", () => {
+    const args = buildSecurityArgs(cfg({ level: "moderate" }));
+    expect(args).toContain("--dangerously-skip-permissions");
+  });
+
+  test("unrestricted auto-emits --dangerously-skip-permissions", () => {
     const args = buildSecurityArgs(cfg({ level: "unrestricted" }));
-    expect(args).not.toContain("--dangerously-skip-permissions");
+    expect(args).toContain("--dangerously-skip-permissions");
+  });
+
+  test("bypassPermissions=true forces bypass even in locked mode", () => {
+    // The flag is an OR-override: it adds bypass on top of whatever the level
+    // would derive. Useful if someone pins `locked` for surface reasons but
+    // still needs unattended Edit/Write on a narrow allowedTools list.
+    const args = buildSecurityArgs(cfg({ level: "locked", bypassPermissions: true }));
+    expect(args).toContain("--dangerously-skip-permissions");
+  });
+
+  test("--dangerously-skip-permissions is emitted at most once", () => {
+    // moderate derives it; the flag also asks for it. We must not emit twice.
+    const args = buildSecurityArgs(cfg({ level: "moderate", bypassPermissions: true }));
+    const count = args.filter((a) => a === "--dangerously-skip-permissions").length;
+    expect(count).toBe(1);
   });
 });
 
@@ -81,8 +105,10 @@ describe("buildSecurityArgs — tool lists are comma-joined, not space-joined", 
   });
 
   test("empty caller lists do not add stray flags", () => {
-    const args = buildSecurityArgs(cfg());
-    expect(args).not.toContain("--allowedTools");
+    const args = buildSecurityArgs(cfg({ level: "locked" }));
+    // locked emits --allowedTools for its own preset; make sure the caller's
+    // empty list does not add a second one or a stray --disallowedTools.
+    expect(args.filter((a) => a === "--allowedTools").length).toBe(1);
     expect(args).not.toContain("--disallowedTools");
   });
 });
