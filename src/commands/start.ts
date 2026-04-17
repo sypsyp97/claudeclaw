@@ -11,6 +11,7 @@ import {
   type Settings,
 } from "../config";
 import { type Job, clearJobSchedule, loadJobs } from "../jobs";
+import { executeScheduledJob } from "../scheduler";
 import { migrateIfNeeded } from "../migrate/legacy";
 import { checkExistingDaemon, cleanupPidFile, writePidFile } from "../pid";
 import {
@@ -667,26 +668,21 @@ export async function start(args: string[] = []) {
           currentSettings.timezoneOffsetMinutes,
         );
         if (hits.length === 0) continue;
-        resolvePrompt(job.prompt)
-          .then((prompt) => run(job.name, prompt))
-          .then((r) => {
-            if (job.notify === false) return;
-            if (job.notify === "error" && r.exitCode === 0) return;
-            forwardToTelegram(job.name, r);
-            forwardToDiscord(job.name, r);
-          })
-          .catch((err) => {
+        void executeScheduledJob(job, {
+          resolvePrompt,
+          run,
+          clearJobSchedule: async (name) => {
+            await clearJobSchedule(name);
+            console.log(`[${ts()}] Cleared schedule for one-time job: ${name}`);
+          },
+          onForward: (label, r) => {
+            forwardToTelegram(label, r);
+            forwardToDiscord(label, r);
+          },
+          onError: (err) => {
             console.error(`[${ts()}] Job ${job.name} failed:`, err);
-          })
-          .finally(async () => {
-            if (job.recurring) return;
-            try {
-              await clearJobSchedule(job.name);
-              console.log(`[${ts()}] Cleared schedule for one-time job: ${job.name}`);
-            } catch (err) {
-              console.error(`[${ts()}] Failed to clear schedule for ${job.name}:`, err);
-            }
-          });
+          },
+        });
       } catch (err) {
         console.error(`[${ts()}] Cron tick error for ${job.name}:`, err);
       }

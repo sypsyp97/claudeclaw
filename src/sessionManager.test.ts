@@ -100,6 +100,33 @@ describe("removeThreadSession", () => {
     expect(await mgr.peekThreadSession("discord", "shared")).toBeNull();
     expect(await mgr.peekThreadSession("telegram", "shared")).not.toBeNull();
   });
+
+  // Regression: the shared-db cache re-runs importLegacyJson on every fresh
+  // boot, so a legacy `sessions.json` left on disk would silently revive any
+  // thread session a caller had just removed. `removeThreadSession` must also
+  // strip the entry from the legacy JSON so a daemon restart doesn't undo it.
+  test("survives a shared-db cache reset: deleted thread does not come back from legacy JSON", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    const { threadSessionsFile } = await import("./paths");
+    await writeFile(
+      threadSessionsFile(),
+      JSON.stringify({ threads: { "ghost-thread": { sessionId: "legacy-session-xyz" } } }),
+      "utf8"
+    );
+
+    // Fresh open re-imports → the thread shows up in SQLite.
+    await resetSharedDbCache();
+    expect((await mgr.peekThreadSession("discord", "ghost-thread"))?.sessionId).toBe("legacy-session-xyz");
+
+    // Remove → SQLite row gone.
+    await mgr.removeThreadSession("discord", "ghost-thread");
+    expect(await mgr.peekThreadSession("discord", "ghost-thread")).toBeNull();
+
+    // Simulate a daemon restart: cache reset triggers another importer pass.
+    // If the legacy JSON still had the entry, the thread would return here.
+    await resetSharedDbCache();
+    expect(await mgr.peekThreadSession("discord", "ghost-thread")).toBeNull();
+  });
 });
 
 describe("incrementThreadTurn", () => {

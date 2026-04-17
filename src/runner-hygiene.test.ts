@@ -68,4 +68,50 @@ describe("threadQueues hygiene", () => {
     await Promise.resolve();
     expect(_threadQueueSize()).toBe(before);
   });
+
+  // Two bridges (e.g. Discord + Telegram) can mint the same bare thread-id
+  // string. The session key contract already scopes them with `source` —
+  // `thread:<source>:<id>` — and the queue must follow suit, otherwise
+  // unrelated channels get forced onto the same serial lane for no reason.
+  test("same thread-id from different sources runs in parallel, not serialized", async () => {
+    let inFlight = 0;
+    let peakInFlight = 0;
+    async function task(): Promise<void> {
+      inFlight++;
+      if (inFlight > peakInFlight) peakInFlight = inFlight;
+      await new Promise((r) => setTimeout(r, 80));
+      inFlight--;
+    }
+
+    const sharedThreadId = "overlap-123";
+    await Promise.all([
+      _enqueueForTest(task, sharedThreadId, "discord"),
+      _enqueueForTest(task, sharedThreadId, "telegram"),
+    ]);
+
+    expect(peakInFlight).toBe(2);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  test("same thread-id AND same source still serializes (identity collision, not just id)", async () => {
+    let inFlight = 0;
+    let peakInFlight = 0;
+    async function task(): Promise<void> {
+      inFlight++;
+      if (inFlight > peakInFlight) peakInFlight = inFlight;
+      await new Promise((r) => setTimeout(r, 60));
+      inFlight--;
+    }
+
+    const threadId = "serialize-me";
+    await Promise.all([
+      _enqueueForTest(task, threadId, "discord"),
+      _enqueueForTest(task, threadId, "discord"),
+    ]);
+
+    expect(peakInFlight).toBe(1);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 });

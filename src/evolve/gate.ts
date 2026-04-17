@@ -4,7 +4,10 @@
  * user work sitting in the same worktree.
  */
 
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 
 export interface VerifyResult {
   ok: boolean;
@@ -17,6 +20,30 @@ export interface VerifyResult {
 export interface GateRunners {
   runVerify?(cwd: string): Promise<VerifyResult>;
   runGit?(cwd: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }>;
+  /**
+   * Content fingerprint for one worktree-relative path. Returns null when the
+   * path does not exist (deleted, never created). Used to detect when the
+   * evolve subagent modifies a file that was ALREADY dirty before the run —
+   * such a file would otherwise sit in `baselineDirty` and be invisible to
+   * `touchedPaths`, meaning it wouldn't be reverted on RED or committed on
+   * GREEN. Default hashes file bytes with SHA-1; tests inject.
+   */
+  hashPath?(cwd: string, path: string): Promise<string | null>;
+}
+
+export async function hashWorktreePath(cwd: string, path: string): Promise<string | null> {
+  const abs = isAbsolute(path) ? path : join(cwd, path);
+  try {
+    const bytes = await readFile(abs);
+    return createHash("sha1").update(bytes).digest("hex");
+  } catch (err) {
+    const code = (err as { code?: string } | undefined)?.code;
+    if (code === "ENOENT" || code === "EISDIR") return null;
+    // Permission errors, Windows file-locking, etc. — treat as unknown, not
+    // as "unchanged". Return a sentinel that differs from any real hash so
+    // the path stays in the touched set and gets reverted conservatively.
+    return `unreadable:${code ?? "unknown"}:${Date.now()}`;
+  }
 }
 
 export async function runVerify(cwd: string, runners: GateRunners = {}): Promise<VerifyResult> {

@@ -166,6 +166,63 @@ describe("evolve loop with real git", () => {
     expect(events.length).toBeGreaterThanOrEqual(1);
   });
 
+  test("RED verify + baseline-dirty file further modified: baseline file is restored, not left mutated", async () => {
+    // Tracked file → commit initial → then dirty it in the worktree BEFORE the
+    // evolve run. Then have the subagent modify it further. On RED verify the
+    // subagent's edit must be reverted; the file should come back to the
+    // committed (index) state, not stay in whichever half-modified state the
+    // subagent left it in.
+    await writeFile(join(tmpRepo, "shared.txt"), "committed content\n", "utf8");
+    gitMustSucceed(tmpRepo, ["add", "shared.txt"]);
+    gitMustSucceed(tmpRepo, ["commit", "-q", "-m", "seed shared"]);
+    const headBefore = gitMustSucceed(tmpRepo, ["rev-parse", "HEAD"]);
+    await writeFile(join(tmpRepo, "shared.txt"), "user pre-existing wip\n", "utf8");
+
+    // Confirm baseline is dirty before evolve runs.
+    const baselineStatus = gitMustSucceed(tmpRepo, ["status", "--porcelain", "shared.txt"]);
+    expect(baselineStatus).toContain("shared.txt");
+
+    const result = await evolveOnce(
+      db,
+      makeTask({
+        id: "edit-baseline-dirty",
+        title: "Edit baseline-dirty file",
+        body: "Subagent overwrites a file that was already dirty.",
+      }),
+      tmpRepo,
+      {
+        async runExec({ cwd }) {
+          await writeFile(join(cwd, "shared.txt"), "SUBAGENT OVERWROTE IT\n", "utf8");
+          return { ok: true, exitCode: 0, durationMs: 1, stdout: "", stderr: "" };
+        },
+        gate: {
+          async runVerify() {
+            return { ok: false, exitCode: 1, durationMs: 1, stdout: "", stderr: "nope" };
+          },
+        },
+      }
+    );
+
+    expect(result.outcome).toBe("verify-failed");
+
+    // HEAD must not have moved.
+    expect(gitMustSucceed(tmpRepo, ["rev-parse", "HEAD"])).toBe(headBefore);
+
+    // Critically: `shared.txt` must NOT still contain the subagent's text. It
+    // should be back to the committed state (revert wiped both the subagent's
+    // edit AND the earlier user wip — that's acceptable because the revert
+    // scope is "everything dirty on this path", and we snapshot only hashes,
+    // not the pre-exec contents). The important invariant is that the
+    // subagent's half-applied edit is gone.
+    const after = await readFile(join(tmpRepo, "shared.txt"), "utf8");
+    expect(after).not.toContain("SUBAGENT OVERWROTE IT");
+
+    // Clean up so the next subtest starts from a clean tree.
+    gitMustSucceed(tmpRepo, ["checkout", "--", "shared.txt"]);
+    gitMustSucceed(tmpRepo, ["rm", "-q", "shared.txt"]);
+    gitMustSucceed(tmpRepo, ["commit", "-q", "-m", "drop shared"]);
+  });
+
   test("exec failure: real git wipes changes, no commit, no verify run", async () => {
     const headBefore = gitMustSucceed(tmpRepo, ["rev-parse", "HEAD"]);
     let verifyWasCalled = false;

@@ -156,4 +156,84 @@ describe("evolveOnce — fake executor", () => {
 
     expect(restoreCalls).toEqual([]);
   });
+
+  // The audit caught this: paths that were dirty BEFORE the subagent ran were
+  // being excluded from `touchedPaths` entirely — so if the subagent modified
+  // an already-dirty file, that change was neither reverted on RED nor staged
+  // on GREEN. Fix is a content-hash snapshot: a baseline path whose bytes
+  // change during exec must land in the touched set.
+  test("subagent edits an already-dirty baseline file → it is reverted on RED", async () => {
+    const restoreCalls: string[][] = [];
+    let hashCalls = 0;
+    const result = await evolveOnce(db, task({ id: "edit-baseline", title: "edit baseline" }), tempRoot, {
+      runExec: async () => ({ ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
+      gate: {
+        runVerify: async () => ({
+          ok: false,
+          exitCode: 1,
+          stdout: "",
+          stderr: "nope",
+          durationMs: 1,
+        }),
+        runGit: async (_cwd, args) => {
+          if (args[0] === "status") {
+            // Baseline and after: the same set of paths is dirty. Only the
+            // *content* of user-wip.txt changes between snapshots.
+            return { ok: true, stdout: " M user-wip.txt\n", stderr: "" };
+          }
+          if (args[0] === "restore" || args[0] === "clean") restoreCalls.push(args);
+          if (args[0] === "ls-files") return { ok: true, stdout: "user-wip.txt\n", stderr: "" };
+          return { ok: true, stdout: "", stderr: "" };
+        },
+        hashPath: async (_cwd, path) => {
+          hashCalls++;
+          // First snapshot (baseline): one content. Second snapshot (after
+          // exec): different content. Any hash stability will cause the
+          // path to be excluded from touched and the test to fail.
+          if (path !== "user-wip.txt") return null;
+          return hashCalls === 1 ? "hash-before" : "hash-after";
+        },
+      },
+    });
+
+    expect(result.outcome).toBe("verify-failed");
+    // The baseline-dirty file must be reverted because the subagent touched it.
+    const touchedRestore = restoreCalls.filter((c) => c.includes("user-wip.txt"));
+    expect(touchedRestore.length).toBeGreaterThan(0);
+  });
+
+  test("baseline-dirty file NOT touched by subagent is preserved (not reverted)", async () => {
+    const restoreCalls: string[][] = [];
+    const result = await evolveOnce(db, task({ id: "preserve-wip", title: "preserve wip" }), tempRoot, {
+      runExec: async () => ({ ok: true, exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
+      gate: {
+        runVerify: async () => ({
+          ok: false,
+          exitCode: 1,
+          stdout: "",
+          stderr: "nope",
+          durationMs: 1,
+        }),
+        runGit: async (_cwd, args) => {
+          if (args[0] === "status") {
+            return { ok: true, stdout: " M user-wip.txt\n M evolve.ts\n", stderr: "" };
+          }
+          if (args[0] === "restore" || args[0] === "clean") restoreCalls.push(args);
+          if (args[0] === "ls-files") return { ok: true, stdout: "x\n", stderr: "" };
+          return { ok: true, stdout: "", stderr: "" };
+        },
+        // Only evolve.ts changes; user-wip.txt hash is stable across both
+        // snapshots, so it must never appear in a restore/clean call.
+        hashPath: async (_cwd, path) => {
+          if (path === "user-wip.txt") return "stable";
+          if (path === "evolve.ts") return String(Math.random()); // always fresh
+          return null;
+        },
+      },
+    });
+    expect(result.outcome).toBe("verify-failed");
+    for (const call of restoreCalls) {
+      expect(call).not.toContain("user-wip.txt");
+    }
+  });
 });

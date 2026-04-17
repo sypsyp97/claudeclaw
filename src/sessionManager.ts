@@ -13,6 +13,8 @@
  * caller (the Discord `/status` path) wants the global view.
  */
 
+import { readFile, unlink, writeFile } from "fs/promises";
+import { threadSessionsFile } from "./paths";
 import { threadKey } from "./router/session-key";
 import { getSharedDb } from "./state/shared-db";
 import {
@@ -89,6 +91,43 @@ export async function createThreadSession(
 export async function removeThreadSession(source: ThreadSource, threadId: string): Promise<void> {
   const db = await getSharedDb();
   deleteByKey(db, threadKey(source, threadId));
+  // Also strip the entry from the legacy `sessions.json`. Otherwise the
+  // importer that runs on every fresh shared-db open would re-insert the
+  // just-deleted thread on the next daemon restart. The legacy file can't
+  // encode `source`, so we drop by bare threadId — which matches how the
+  // importer reads it anyway.
+  await forgetLegacyThread(threadId);
+}
+
+async function forgetLegacyThread(threadId: string): Promise<void> {
+  const path = threadSessionsFile();
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch {
+    return; // no legacy file, nothing to rewrite
+  }
+  let parsed: { threads?: Record<string, unknown> };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return; // malformed — leave alone, next boot's importer will swallow it too
+  }
+  if (!parsed || typeof parsed !== "object" || !parsed.threads || typeof parsed.threads !== "object") {
+    return;
+  }
+  if (!(threadId in parsed.threads)) return;
+  delete parsed.threads[threadId];
+  try {
+    if (Object.keys(parsed.threads).length === 0) {
+      await unlink(path);
+    } else {
+      await writeFile(path, JSON.stringify(parsed, null, 2) + "\n", "utf8");
+    }
+  } catch {
+    // best-effort; if we can't rewrite, the next import will still try to
+    // resurrect, but the SQLite delete we already did stands for this session.
+  }
 }
 
 /** Increment turn counter for a thread session. */

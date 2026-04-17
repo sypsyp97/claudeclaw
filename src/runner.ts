@@ -70,20 +70,29 @@ const RATE_LIMIT_PATTERN = /you.ve hit your limit|out of extra usage/i;
 // Serial queue — prevents concurrent --resume on the same session
 // Global queue for non-thread messages (backward compatible)
 let globalQueue: Promise<unknown> = Promise.resolve();
-// Per-thread queues — each thread runs independently in parallel
+// Per-thread queues — each thread runs independently in parallel.
+// The key is `<source>:<threadId>` to match the session-key contract in
+// router/session-key.ts. Keying on bare threadId would force two bridges
+// that happen to mint the same string (a Discord channel id and a Telegram
+// chat id) onto the same serial lane — pure incidental contention.
 const threadQueues = new Map<string, Promise<unknown>>();
 
-function enqueue<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
+function queueKey(threadId: string, source: ThreadSource): string {
+  return `${source}:${threadId}`;
+}
+
+function enqueue<T>(fn: () => Promise<T>, threadId?: string, source: ThreadSource = "cli"): Promise<T> {
   if (threadId) {
-    const current = threadQueues.get(threadId) ?? Promise.resolve();
+    const key = queueKey(threadId, source);
+    const current = threadQueues.get(key) ?? Promise.resolve();
     const task = current.then(fn, fn);
     const tracked = task.catch(() => {});
-    threadQueues.set(threadId, tracked);
+    threadQueues.set(key, tracked);
     // Once this task settles, drop the entry if it is still the tail of the
     // queue. Otherwise a newer task has already landed and owns the slot.
     void tracked.finally(() => {
-      if (threadQueues.get(threadId) === tracked) {
-        threadQueues.delete(threadId);
+      if (threadQueues.get(key) === tracked) {
+        threadQueues.delete(key);
       }
     });
     return task;
@@ -99,8 +108,12 @@ export function _threadQueueSize(): number {
 }
 
 /** Test-only: direct enqueue so we can assert cleanup without spawning Claude. */
-export function _enqueueForTest<T>(fn: () => Promise<T>, threadId?: string): Promise<T> {
-  return enqueue(fn, threadId);
+export function _enqueueForTest<T>(
+  fn: () => Promise<T>,
+  threadId?: string,
+  source: ThreadSource = "cli",
+): Promise<T> {
+  return enqueue(fn, threadId, source);
 }
 
 function extractRateLimitMessage(stdout: string, stderr: string): string | null {
@@ -813,7 +826,7 @@ export async function run(
   sink?: StatusSink,
   source: ThreadSource = "cli",
 ): Promise<RunResult> {
-  return enqueue(() => execClaude(name, prompt, threadId, sink, source), threadId);
+  return enqueue(() => execClaude(name, prompt, threadId, sink, source), threadId, source);
 }
 
 function prefixUserMessageWithClock(prompt: string): string {
