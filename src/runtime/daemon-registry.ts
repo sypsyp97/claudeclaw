@@ -14,7 +14,7 @@
  * on the next sweep.
  */
 
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -118,5 +118,17 @@ async function readEntries(path: string): Promise<DaemonEntry[]> {
 async function writeEntries(path: string, entries: DaemonEntry[]): Promise<void> {
   await mkdir(dirname(path), { recursive: true }).catch(() => {});
   const body = JSON.stringify({ daemons: entries }, null, 2) + "\n";
-  await writeFile(path, body, "utf8");
+  // Write-then-rename for atomicity: a crash mid-write leaves the final path intact.
+  const tmpPath = `${path}.tmp.${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    await writeFile(tmpPath, body, "utf8");
+    await rename(tmpPath, path);
+  } catch (err) {
+    try {
+      await unlink(tmpPath);
+    } catch {
+      // best-effort cleanup
+    }
+    throw err;
+  }
 }

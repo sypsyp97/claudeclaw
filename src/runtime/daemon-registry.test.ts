@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import * as fsPromises from "node:fs/promises";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -184,5 +185,76 @@ describe("daemon-registry — DaemonEntry shape contract", () => {
     expect(typeof entry.pid).toBe("number");
     expect(typeof entry.cwd).toBe("string");
     expect(entry.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+describe("daemon-registry — atomic write (crash-mid-write safety)", () => {
+  // PL-5: writeEntries() uses plain fs/promises.writeFile. If the process
+  // crashes or is killed mid-write, the file is truncated and the very
+  // next readEntries() parses it as [] (via the JSON.parse catch), so
+  // `stopAll` reports "No running daemons found" while daemons are still
+  // alive. Fix: write to a sibling tmp path and atomically rename.
+  //
+  // This test simulates that crash by monkey-patching writeFile to write
+  // only half the bytes to the *final* path and then throw. If the
+  // production code truly writes atomically (tmp + rename), the final
+  // path will either contain the prior valid content or not exist yet —
+  // either way, listDaemons() must still return the prior entry.
+  test("crash during write leaves prior registry content intact", async () => {
+    // Seed: one valid daemon entry written normally.
+    await registerDaemon({ pid: 111, cwd: "/seed" }, { path: registryPath });
+    expect((await listDaemons({ path: registryPath })).length).toBe(1);
+
+    const realWriteFile = fsPromises.writeFile;
+    let crashed = false;
+    const crashingWriteFile: typeof fsPromises.writeFile = (async (
+      target: Parameters<typeof fsPromises.writeFile>[0],
+      data: Parameters<typeof fsPromises.writeFile>[1],
+      options?: Parameters<typeof fsPromises.writeFile>[2]
+    ) => {
+      // Only sabotage the next write to the final registry path; let any
+      // writes to sibling tmp paths (e.g. `<path>.tmp.<pid>-<rand>`)
+      // succeed so the atomic-write fix is what the assertion measures.
+      if (typeof target === "string" && target === registryPath && !crashed) {
+        crashed = true;
+        const body = typeof data === "string" ? data : String(data);
+        const half = body.slice(0, Math.floor(body.length / 2));
+        await realWriteFile(target, half, options);
+        throw new Error("simulated crash mid-write");
+      }
+      return realWriteFile(target as never, data as never, options as never);
+    }) as typeof fsPromises.writeFile;
+
+    mock.module("node:fs/promises", () => ({
+      ...fsPromises,
+      writeFile: crashingWriteFile,
+      default: { ...fsPromises, writeFile: crashingWriteFile },
+    }));
+
+    try {
+      // Trigger a write that will hit the sabotaged writeFile.
+      await registerDaemon({ pid: 222, cwd: "/new" }, { path: registryPath }).catch(() => undefined);
+
+      // Restore the real writeFile before asserting so listDaemons() is
+      // unaffected by the mock (it only reads).
+      mock.module("node:fs/promises", () => ({
+        ...fsPromises,
+        writeFile: realWriteFile,
+        default: { ...fsPromises, writeFile: realWriteFile },
+      }));
+
+      // The registry must still be parseable and must still contain the
+      // originally-seeded entry. Today this fails because the plain
+      // writeFile left a half-written file and readEntries returns [].
+      const list = await listDaemons({ path: registryPath });
+      expect(list.length).toBeGreaterThanOrEqual(1);
+      expect(list.map((d) => d.pid)).toContain(111);
+    } finally {
+      mock.module("node:fs/promises", () => ({
+        ...fsPromises,
+        writeFile: realWriteFile,
+        default: { ...fsPromises, writeFile: realWriteFile },
+      }));
+    }
   });
 });
