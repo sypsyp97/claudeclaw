@@ -197,20 +197,17 @@ async function sendTyping(token: string, channelId: string): Promise<void> {
   await discordApi(token, "POST", `/channels/${channelId}/typing`).catch(() => {});
 }
 
-async function sendReaction(
+export async function sendReaction(
   token: string,
   channelId: string,
   messageId: string,
   emoji: string,
 ): Promise<void> {
-  const encoded = encodeURIComponent(emoji);
-  await fetch(
-    `${DISCORD_API}/channels/${channelId}/messages/${messageId}/reactions/${encoded}/@me`,
-    {
-      method: "PUT",
-      headers: { Authorization: `Bot ${token}` },
-    },
-  ).catch(() => {});
+  await discordApi(
+    token,
+    "PUT",
+    `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,
+  );
 }
 
 // --- Reaction directive extraction (same as telegram.ts) ---
