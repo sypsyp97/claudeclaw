@@ -23,13 +23,18 @@ export interface DiscordStatusSinkOptions {
   transport: DiscordTransport;
   channelId: string;
   windowMs?: number;
+  heartbeatMs?: number;
 }
+
+const DEFAULT_HEARTBEAT_MS = 2000;
 
 export function createDiscordStatusSink(opts: DiscordStatusSinkOptions): StatusSink {
   const { transport, channelId } = opts;
+  const heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
   let renderer: Renderer | null = null;
   let messageId: string | null = null;
   let coalescer: Coalescer | null = null;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   async function sendPatch(): Promise<void> {
     if (!messageId || !renderer) return;
@@ -39,6 +44,28 @@ export function createDiscordStatusSink(opts: DiscordStatusSinkOptions): StatusS
     } catch {
       // swallow — status display is best-effort
     }
+  }
+
+  function stopHeartbeat(): void {
+    if (heartbeatTimer !== null) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
+  function startHeartbeat(): void {
+    if (heartbeatMs <= 0) return;
+    if (heartbeatTimer !== null) return;
+    const timer = setInterval(() => {
+      // Fire-and-forget; sendPatch swallows its own errors, but guard the
+      // synchronous portion too so a throw can't escape the timer callback.
+      void sendPatch().catch(() => {});
+    }, heartbeatMs);
+    const maybeUnref = (timer as { unref?: () => void }).unref;
+    if (typeof maybeUnref === "function") {
+      maybeUnref.call(timer);
+    }
+    heartbeatTimer = timer;
   }
 
   return {
@@ -52,6 +79,9 @@ export function createDiscordStatusSink(opts: DiscordStatusSinkOptions): StatusS
       } catch {
         messageId = null;
       }
+      if (messageId) {
+        startHeartbeat();
+      }
     },
 
     async update(event: StatusEvent) {
@@ -61,6 +91,7 @@ export function createDiscordStatusSink(opts: DiscordStatusSinkOptions): StatusS
     },
 
     async close(result: CloseResult) {
+      stopHeartbeat();
       if (coalescer) coalescer.dispose();
       if (!renderer || !messageId) return;
       const finalContent = renderer.renderFinal(result);

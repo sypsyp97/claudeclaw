@@ -163,3 +163,95 @@ describe("createDiscordStatusSink — updates", () => {
     expect(true).toBe(true);
   });
 });
+
+describe("createDiscordStatusSink — heartbeat", () => {
+  test("periodically PATCHes while idle so the (Xs) counter advances", async () => {
+    const { calls, transport } = recorder();
+    const sink = createDiscordStatusSink({
+      transport,
+      channelId: "c",
+      windowMs: 5,
+      heartbeatMs: 40,
+    });
+    await sink.open("t", "Tweak README");
+    await sleep(150);
+    const patches = calls.filter((c) => c.kind === "patch");
+    expect(patches.length).toBeGreaterThanOrEqual(2);
+    await sink.close({ ok: true });
+  });
+
+  test("heartbeat stops after close()", async () => {
+    const { calls, transport } = recorder();
+    const sink = createDiscordStatusSink({
+      transport,
+      channelId: "c",
+      windowMs: 5,
+      heartbeatMs: 40,
+    });
+    await sink.open("t", "l");
+    await sleep(60);
+    await sink.close({ ok: true });
+    const patchCountAfterClose = calls.filter((c) => c.kind === "patch").length;
+    await sleep(120);
+    const patchCountLater = calls.filter((c) => c.kind === "patch").length;
+    expect(patchCountLater).toBe(patchCountAfterClose);
+  });
+
+  test("heartbeat PATCH content contains the task label (renderer output)", async () => {
+    const { calls, transport } = recorder();
+    const sink = createDiscordStatusSink({
+      transport,
+      channelId: "c",
+      windowMs: 5,
+      heartbeatMs: 40,
+    });
+    await sink.open("t", "Tweak README");
+    await sleep(100);
+    const patches = calls.filter((c) => c.kind === "patch");
+    expect(patches.length).toBeGreaterThanOrEqual(1);
+    expect(patches.some((p) => (p.content ?? "").includes("Tweak README"))).toBe(true);
+    await sink.close({ ok: true });
+  });
+
+  test("no heartbeat PATCHes fire if open()'s postMessage throws", async () => {
+    const calls: RecordedCall[] = [];
+    const transport: DiscordTransport = {
+      async postMessage(channelId, content) {
+        calls.push({ kind: "post", channelId, content });
+        throw new Error("no permission");
+      },
+      async patchMessage(channelId, messageId, content) {
+        calls.push({ kind: "patch", channelId, messageId, content });
+      },
+      async deleteMessage(channelId, messageId) {
+        calls.push({ kind: "delete", channelId, messageId });
+      },
+    };
+    const sink = createDiscordStatusSink({
+      transport,
+      channelId: "c",
+      windowMs: 5,
+      heartbeatMs: 20,
+    });
+    await sink.open("t", "l"); // swallows
+    await sleep(100);
+    const patches = calls.filter((c) => c.kind === "patch");
+    expect(patches.length).toBe(0);
+    await sink.close({ ok: true });
+  });
+
+  test("heartbeatMs: 0 disables the heartbeat (no periodic PATCHes)", async () => {
+    const { calls, transport } = recorder();
+    const sink = createDiscordStatusSink({
+      transport,
+      channelId: "c",
+      windowMs: 5,
+      heartbeatMs: 0,
+    });
+    await sink.open("t", "l");
+    await sleep(120);
+    const patches = calls.filter((c) => c.kind === "patch");
+    expect(patches.length).toBe(0);
+    await sink.close({ ok: true });
+  });
+});
