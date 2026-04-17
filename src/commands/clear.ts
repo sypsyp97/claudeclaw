@@ -1,8 +1,10 @@
 import { backupSession } from "../sessions";
-import { checkExistingDaemon } from "../pid";
-import { stop } from "./stop";
 
 export async function clear() {
+  // Do not stop the daemon here: when clear runs inside the daemon's own
+  // Claude CLI child, a SIGTERM would kill the process awaiting the reply.
+  // backupSession() already removes the session row, so the daemon's next
+  // turn will transparently create a fresh one.
   const backup = await backupSession();
 
   if (backup) {
@@ -11,13 +13,6 @@ export async function clear() {
     console.log("No active session to back up.");
   }
 
-  // If daemon is running, stop it so the next start gets a fresh session
-  const pid = await checkExistingDaemon();
-  if (pid) {
-    console.log("Stopping daemon so next start creates a fresh session...");
-    await stop();
-  } else {
-    console.log("No daemon running. Next start will create a new session.");
-    process.exit(0);
-  }
+  console.log("No daemon will be stopped; a running daemon (if any) will create a fresh session on its next turn.");
+  process.exit(0);
 }

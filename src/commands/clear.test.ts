@@ -16,11 +16,11 @@ interface SpawnResult {
   exitCode: number;
 }
 
-function runClear(cwd: string): Promise<SpawnResult> {
+function runClear(cwd: string, extraEnv: Record<string, string> = {}): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
     const child = spawn("bun", ["run", join(REPO_ROOT, "src/index.ts"), "--clear"], {
       cwd,
-      env: { ...process.env },
+      env: { ...process.env, ...extraEnv },
       stdio: ["ignore", "pipe", "pipe"],
     });
     const stdout: Buffer[] = [];
@@ -136,5 +136,83 @@ describe("clear command", () => {
     const entries = await readdir(hermesDir);
     const backups = entries.filter((n) => /^session_\d+\.backup$/.test(n)).sort();
     expect(backups).toContain("session_3.backup");
+  }, 20_000);
+
+  test("daemon running: clear backs up session but leaves the daemon alive", async () => {
+    // When `clear` is invoked from INSIDE the daemon (Claude child spawned
+    // by the Discord/Telegram bot runs the slash command), killing the
+    // daemon hangs the user's current turn forever. Desired behavior: just
+    // back up the session and return — the next turn will create a fresh
+    // session on its own, same way Discord's `/reset` already does in-proc.
+    const dir = await freshProject();
+    dirsToClean.push(dir);
+
+    const hermesDir = join(dir, ".claude", "hermes");
+    const sessionFile = join(hermesDir, "session.json");
+    const pidFile = join(hermesDir, "daemon.pid");
+
+    // Spawn a long-running dummy daemon. We use node (not bun) for
+    // portability and because we only care about pid + signal handling.
+    const dummy = spawn(
+      "node",
+      ["-e", "process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1<<30)"],
+      { detached: true, stdio: "ignore" }
+    );
+    dummy.unref();
+    const daemonPid = dummy.pid;
+    if (!daemonPid) throw new Error("failed to spawn dummy daemon");
+
+    // Per-test registry so clear's unregisterDaemon has a row to strip
+    // without touching the user's real ~/.claude/hermes/daemons.json.
+    const registryPath = join(await mkdtemp(join(tmpdir(), "hermes-clear-registry-")), "daemons.json");
+    await writeFile(
+      registryPath,
+      JSON.stringify({
+        daemons: [{ pid: daemonPid, cwd: dir, startedAt: new Date().toISOString() }],
+      })
+    );
+
+    // Register the daemon pid locally + seed a session to back up.
+    await writeFile(pidFile, `${daemonPid}\n`);
+    await writeFile(
+      sessionFile,
+      JSON.stringify({
+        sessionId: "live-daemon-session",
+        createdAt: new Date().toISOString(),
+        lastUsedAt: new Date().toISOString(),
+        turnCount: 0,
+        compactWarned: false,
+      })
+    );
+
+    try {
+      const result = await runClear(dir, { HERMES_DAEMON_REGISTRY: registryPath });
+      expect(result.exitCode).toBe(0);
+
+      // Artifact assertion: the backup was created with the session id.
+      const entries = await readdir(hermesDir);
+      const backups = entries.filter((n) => /^session_\d+\.backup$/.test(n));
+      expect(backups).toContain("session_1.backup");
+      const backupContent = await readFile(join(hermesDir, "session_1.backup"), "utf8");
+      expect(backupContent).toContain("live-daemon-session");
+
+      // Behavioral assertion (the one that currently fails): the daemon
+      // must still be alive after clear. `process.kill(pid, 0)` throws
+      // ESRCH if the process is gone.
+      let alive = true;
+      try {
+        process.kill(daemonPid, 0);
+      } catch {
+        alive = false;
+      }
+      expect(alive).toBe(true);
+    } finally {
+      // Always kill the dummy so it doesn't leak, even if assertions failed.
+      try {
+        process.kill(daemonPid, "SIGKILL");
+      } catch {
+        // already dead
+      }
+    }
   }, 20_000);
 });
