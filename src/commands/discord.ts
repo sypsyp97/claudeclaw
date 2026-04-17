@@ -7,12 +7,14 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
+import { discoverSkills } from "../skills/discovery";
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { discordInboxDir } from "../paths";
 import { projectSlugFromCwd } from "../runtime/claude-paths";
 import { createDiscordStatusSink, type DiscordTransport } from "../status/sinks/discord";
 import { DISCORD_API, discordApi } from "./discord-api";
+import { buildSlashCommandList } from "./slash-commands";
 
 // --- Discord API constants ---
 
@@ -363,33 +365,10 @@ async function downloadDiscordAttachment(
 async function registerSlashCommands(token: string): Promise<void> {
   if (!applicationId) return;
 
-  const commands = [
-    {
-      name: "start",
-      description: "Show welcome message and usage instructions",
-      type: 1,
-    },
-    {
-      name: "reset",
-      description: "Reset the global session for a fresh start",
-      type: 1,
-    },
-    {
-      name: "compact",
-      description: "Compact session to reduce context size",
-      type: 1,
-    },
-    {
-      name: "status",
-      description: "Show current session status",
-      type: 1,
-    },
-    {
-      name: "context",
-      description: "Show context window usage",
-      type: 1,
-    },
-  ];
+  // Discovery failures must never block boot — fall back to the hardcoded
+  // baseline by passing an empty skill list.
+  const skills = await discoverSkills().catch(() => [] as never[]);
+  const commands = buildSlashCommandList(skills);
 
   await discordApi(
     token,
@@ -397,7 +376,7 @@ async function registerSlashCommands(token: string): Promise<void> {
     `/applications/${applicationId}/commands`,
     commands,
   );
-  debugLog("Slash commands registered");
+  debugLog(`Slash commands registered (${commands.length} total)`);
 }
 
 // --- Interaction response helper ---
@@ -806,6 +785,88 @@ async function handleInteractionCreate(token: string, interaction: DiscordIntera
           content: `Failed to read context: ${err instanceof Error ? err.message : err}`,
         });
       }
+      return;
+    }
+
+    // Skill fallthrough: names registered from discovered SKILL.md files are
+    // resolved here. Anything that neither matches a hardcoded handler nor
+    // resolves to a skill body gets the legacy "Unknown command" reply so
+    // autocomplete-surfaced but now-missing names still get a response.
+    const commandName = interaction.data.name;
+    try {
+      // Plugin skills are registered with discovery's `${plugin}_${skill}`
+      // name but resolveSkillPrompt expects `${plugin}:${skill}`. If the
+      // literal slug misses, retry with the first underscore rewritten.
+      let skillContext = await resolveSkillPrompt(`/${commandName}`).catch(
+        () => null,
+      );
+      if (!skillContext) {
+        const firstUnderscore = commandName.indexOf("_");
+        if (firstUnderscore > 0) {
+          const pluginForm = `${commandName.slice(0, firstUnderscore)}:${commandName.slice(firstUnderscore + 1)}`;
+          skillContext = await resolveSkillPrompt(`/${pluginForm}`).catch(
+            () => null,
+          );
+        }
+      }
+      if (skillContext) {
+        await respondToInteraction(interaction, {
+          content: `⏳ Running /${commandName}…`,
+        });
+
+        const channelId = interaction.channel_id;
+        const threadId =
+          channelId && knownThreads.has(channelId) ? channelId : undefined;
+
+        const promptParts = [
+          `[Discord slash command /${commandName}]`,
+          `<command-name>${commandName}</command-name>`,
+          skillContext,
+        ];
+        const prefixedPrompt = promptParts.join("\n");
+
+        const statusSink = channelId
+          ? createDiscordStatusSink({
+              transport: discordStatusTransport(config.token),
+              channelId,
+            })
+          : undefined;
+
+        const result = await runUserMessage(
+          "discord-slash",
+          prefixedPrompt,
+          threadId,
+          statusSink,
+          "discord",
+        );
+
+        const body =
+          result.exitCode === 0
+            ? extractReactionDirective(result.stdout || "").cleanedText ||
+              "(empty response)"
+            : `Error (exit ${result.exitCode}): ${result.stderr || result.stdout || "Unknown error"}`;
+
+        await fetch(
+          `${DISCORD_API}/webhooks/${applicationId}/${interaction.token}/messages/@original`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: body.slice(0, 2000) }),
+          },
+        ).catch((err) => {
+          console.error(
+            `[Discord] Failed to patch slash-command response: ${err}`,
+          );
+        });
+        return;
+      }
+    } catch (err) {
+      console.error(
+        `[Discord] Slash-command /${commandName} failed: ${err instanceof Error ? err.message : err}`,
+      );
+      await respondToInteraction(interaction, {
+        content: `Error running /${commandName}: ${err instanceof Error ? err.message : String(err)}`,
+      }).catch(() => {});
       return;
     }
 
