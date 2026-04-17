@@ -130,13 +130,10 @@ Follow these steps exactly:
 
 8. **Report**: Print the ASCII art below then show the PID, session, and status info plus the Telegram/Discord next-step guidance.
 
-CRITICAL: Output the ASCII art block below EXACTLY as-is inside a markdown code block. Do NOT re-indent, re-align, or adjust ANY whitespace. Copy every character verbatim. Only replace `<PID>` and `<WORKING_DIR>` with actual values.
+CRITICAL: Output the banner block below EXACTLY as-is inside a markdown code block. Do NOT re-indent, re-align, or adjust ANY whitespace. Copy every character verbatim. Only replace `<PID>` and `<WORKING_DIR>` with actual values.
 
 ```
-🦞         🦞
-   ▐▛███▜▌
-  ▝▜█████▛▘
-    ▘▘ ▝▝
+═══════ ⚡ Claude Hermes ⚡ ═══════
 ```
 
 # HELLO, I AM YOUR CLAUDE HERMES!

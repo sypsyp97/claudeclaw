@@ -93,13 +93,16 @@ var TR = DIM + "\\u256e" + R;
 var BL = DIM + "\\u2570" + R;
 var BR = DIM + "\\u256f" + R;
 var H = DIM + "\\u2500" + R;
-var HEADER = TL + H.repeat(6) + " \\ud83e\\udd9e Claude Hermes \\ud83e\\udd9e " + H.repeat(6) + TR;
+// Fixed 32-cell layout: header, footer, and middle lines all align. The
+// "\\u26a1" bolt is one terminal cell; " \\u26a1 Claude Hermes \\u26a1 " is
+// 19 cells. 32 - 19 - 2 corners = 11 dashes, split 5/6.
+var HEADER = TL + H.repeat(5) + " \\u26a1 Claude Hermes \\u26a1 " + H.repeat(6) + TR;
 var FOOTER = BL + H.repeat(30) + BR;
 
 if (!alive()) {
   process.stdout.write(
     HEADER + "\\n" +
-    B + "        " + RED + "\\u25cb offline" + R + "              " + B + "\\n" +
+    B + "          " + RED + "\\u25cb offline" + R + "           " + B + "\\n" +
     FOOTER
   );
   process.exit(0);
@@ -132,7 +135,7 @@ try {
 } catch {
   process.stdout.write(
     HEADER + "\\n" +
-    B + DIM + "         waiting...         " + R + B + "\\n" +
+    B + DIM + "          waiting...          " + R + B + "\\n" +
     FOOTER
   );
 }
