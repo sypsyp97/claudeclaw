@@ -468,7 +468,7 @@ describe("stop command", () => {
             "node",
             [
               "-e",
-              "process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),3000));process.stdout.write('ready\\n');setInterval(()=>{},1<<30)",
+              "process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),500));process.stdout.write('ready\\n');setInterval(()=>{},1<<30)",
             ],
             { stdio: ["ignore", "pipe", "ignore"] }
           );
