@@ -6,6 +6,7 @@ import { telegram } from "./commands/telegram";
 import { discord } from "./commands/discord";
 import { send } from "./commands/send";
 import { preflight } from "./commands/preflight";
+import { newCmd } from "./commands/new";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -28,6 +29,8 @@ if (command === "--stop-all") {
   await send(args.slice(1));
 } else if (command === "preflight") {
   preflight(args.slice(1));
+} else if (command === "new") {
+  await newCmd(args.slice(1));
 } else {
   await start();
 }
