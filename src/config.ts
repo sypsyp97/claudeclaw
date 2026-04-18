@@ -60,6 +60,7 @@ const DEFAULT_SETTINGS: Settings = {
   plugins: { preflightOnStart: false },
   logging: { includeBodies: false },
   memory: { dreamCron: false, dreamIntervalHours: 24, dreamAgeDays: 7 },
+  learning: { captureCandidateSkills: false },
 };
 
 export interface HeartbeatExcludeWindow {
@@ -131,6 +132,23 @@ export interface Settings {
    * local fallback) when reading.
    */
   memory?: MemoryConfig;
+  /**
+   * Optional in the type so legacy fixtures stay typecheck-green; always
+   * populated at runtime by `parseSettings` from `DEFAULT_SETTINGS.learning`.
+   * Callers should null-check (`settings.learning?.captureCandidateSkills`)
+   * before reading.
+   */
+  learning?: LearningConfig;
+}
+
+export interface LearningConfig {
+  /**
+   * When true, the runner fires the post-turn `captureCandidateSkill` hook
+   * after every successful turn. Captured skills land at status=`candidate`
+   * for human review — the hook never self-promotes to shadow/active. Off
+   * by default; opt in once you trust the slug/description quality.
+   */
+  captureCandidateSkills: boolean;
 }
 
 export interface MemoryConfig {
@@ -337,6 +355,15 @@ function parseSettings(raw: Record<string, any>, discordUserIdsRaw: string[] = [
       includeBodies: raw.logging?.includeBodies === true,
     },
     memory: parseMemoryConfig(raw.memory),
+    learning: parseLearningConfig(raw.learning),
+  };
+}
+
+function parseLearningConfig(raw: any): LearningConfig {
+  const defaults: LearningConfig = { captureCandidateSkills: false };
+  if (!raw || typeof raw !== "object") return { ...defaults };
+  return {
+    captureCandidateSkills: raw.captureCandidateSkills === true,
   };
 }
 

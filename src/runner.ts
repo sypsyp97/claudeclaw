@@ -30,6 +30,7 @@ import { readAllBlocks } from "./memory/blocks";
 import { getSharedDb } from "./state/shared-db";
 import { upsertSession } from "./state/repos/sessions";
 import { appendMessage } from "./state/repos/messages";
+import { captureCandidateSkill } from "./learning/completion-hook";
 
 // These are anchored to the hermes installation (via import.meta.dir), not the
 // project's cwd, so they are safe to freeze at module load.
@@ -936,6 +937,20 @@ async function execClaude(
       userPrompt: prompt,
       assistantReply: stdout,
     });
+
+    if (settings.learning?.captureCandidateSkills) {
+      void (async () => {
+        try {
+          await captureCandidateSkill(
+            { prompt, reply: stdout, tools: [], cwd: process.cwd() },
+            { captureCandidateSkills: true },
+          );
+        } catch {
+          // captureCandidateSkill is no-throw by contract; this catch is a
+          // belt-and-suspenders so an unexpected throw can never tank the run.
+        }
+      })();
+    }
   }
 
   const includeBodies = settings.logging?.includeBodies === true;
