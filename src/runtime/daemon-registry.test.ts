@@ -280,7 +280,10 @@ describe("daemon-registry — project-local registry path", () => {
     const orig = process.cwd();
     try {
       process.chdir(dir);
-      expect(defaultRegistryPath()).toBe(join(dir, ".claude", "hermes", "daemons.json"));
+      // macOS resolves `/var/folders/...` (mkdtemp) to `/private/var/folders/...`
+      // (realpath) after chdir, so compare against process.cwd() rather than
+      // the raw tmpdir path.
+      expect(defaultRegistryPath()).toBe(join(process.cwd(), ".claude", "hermes", "daemons.json"));
     } finally {
       process.chdir(orig);
     }
