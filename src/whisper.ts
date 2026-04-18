@@ -1,424 +1,522 @@
 import { execSync, spawnSync } from "node:child_process";
-import { chmod, mkdir, rename, rm, stat, access, readdir, open, readFile } from "node:fs/promises";
-import { statSync } from "node:fs";
+import { access, chmod, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { statSync, type Dirent } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getSettings } from "./config";
 import { whisperDir } from "./paths";
 
-const WHISPER_MODEL = "base.en";
-const WHISPER_ROOT = whisperDir();
-const BIN_DIR = join(WHISPER_ROOT, "bin");
-const LIB_DIR = join(WHISPER_ROOT, "lib");
-const MODEL_FOLDER = join(WHISPER_ROOT, "models");
-const TMP_FOLDER = join(WHISPER_ROOT, "tmp");
-const OGG_MJS_CONVERTER = fileURLToPath(new URL("./ogg.mjs", import.meta.url));
-const PLUGIN_ROOT = fileURLToPath(new URL("..", import.meta.url));
+// ---------------------------------------------------------------------------
+// Single config object for every on-disk location and remote fact the
+// module needs. Computed once at import time from whisperDir() + the
+// module URL, then treated as read-only.
+// ---------------------------------------------------------------------------
 
-const MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${WHISPER_MODEL}.bin`;
+const CFG = (() => {
+  const root = whisperDir();
+  const modelName = "base.en";
+  return {
+    root,
+    bin: join(root, "bin"),
+    lib: join(root, "lib"),
+    models: join(root, "models"),
+    scratch: join(root, "tmp"),
+    modelName,
+    modelFileName: `ggml-${modelName}.bin`,
+    modelUrl: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${modelName}.bin`,
+    oggBridge: fileURLToPath(new URL("./ogg.mjs", import.meta.url)),
+    pluginRoot: fileURLToPath(new URL("..", import.meta.url)),
+  } as const;
+})();
 
-interface BinarySource {
+interface ArchiveSource {
   url: string;
-  format: "tar.gz" | "zip";
+  kind: "tar.gz" | "zip";
   headers?: Record<string, string>;
 }
 
-const BINARY_SOURCES: Record<string, BinarySource> = {
-  "linux-x64": {
-    url: "https://github.com/dscripka/whisper.cpp_binaries/releases/download/commit_3d42463/whisper-bin-linux-x64.tar.gz",
-    format: "tar.gz",
-  },
-  "darwin-arm64": {
-    url: "https://ghcr.io/v2/homebrew/core/whisper-cpp/blobs/sha256:f0901568c7babbd3022a043887007400e4b57a22d3a90b9c0824d01fa3a77270",
-    format: "tar.gz",
-    headers: { Authorization: "Bearer QQ==" },
-  },
-  "darwin-x64": {
-    url: "https://ghcr.io/v2/homebrew/core/whisper-cpp/blobs/sha256:e6c2f78cbc5d6b311dfe24d8c5d4ffc68a634465c5e35ed11746068583d273c4",
-    format: "tar.gz",
-    headers: { Authorization: "Bearer QQ==" },
-  },
-  "linux-arm64": {
-    url: "https://ghcr.io/v2/homebrew/core/whisper-cpp/blobs/sha256:684199fd6bec28cddfa086c584a49d236386c109f901a443b577b857fd052f83",
-    format: "tar.gz",
-    headers: { Authorization: "Bearer QQ==" },
-  },
-  "win32-x64": {
-    url: "https://github.com/ggml-org/whisper.cpp/releases/download/v1.7.6/whisper-bin-x64.zip",
-    format: "zip",
-  },
-};
+// Bearer QQ== is base64("A"). GHCR demands a header before vending
+// homebrew blobs — anonymous, so any non-empty bearer is accepted.
+const GHCR_AUTH = { Authorization: "Bearer QQ==" } as const;
 
-let warmupPromise: Promise<void> | null = null;
-
-type WhisperDebugLog = (message: string) => void;
-
-function noopLog(): void {}
-
-function getWhisperBinaryPath(): string {
-  const suffix = process.platform === "win32" ? ".exe" : "";
-  return join(BIN_DIR, `whisper-cli${suffix}`);
+function pickBinarySource(platform: string, arch: string): ArchiveSource | null {
+  switch (`${platform}-${arch}`) {
+    case "linux-x64":
+      return {
+        url: "https://github.com/dscripka/whisper.cpp_binaries/releases/download/commit_3d42463/whisper-bin-linux-x64.tar.gz",
+        kind: "tar.gz",
+      };
+    case "linux-arm64":
+      return {
+        url: "https://ghcr.io/v2/homebrew/core/whisper-cpp/blobs/sha256:684199fd6bec28cddfa086c584a49d236386c109f901a443b577b857fd052f83",
+        kind: "tar.gz",
+        headers: { ...GHCR_AUTH },
+      };
+    case "darwin-arm64":
+      return {
+        url: "https://ghcr.io/v2/homebrew/core/whisper-cpp/blobs/sha256:f0901568c7babbd3022a043887007400e4b57a22d3a90b9c0824d01fa3a77270",
+        kind: "tar.gz",
+        headers: { ...GHCR_AUTH },
+      };
+    case "darwin-x64":
+      return {
+        url: "https://ghcr.io/v2/homebrew/core/whisper-cpp/blobs/sha256:e6c2f78cbc5d6b311dfe24d8c5d4ffc68a634465c5e35ed11746068583d273c4",
+        kind: "tar.gz",
+        headers: { ...GHCR_AUTH },
+      };
+    case "win32-x64":
+      return {
+        url: "https://github.com/ggml-org/whisper.cpp/releases/download/v1.7.6/whisper-bin-x64.zip",
+        kind: "zip",
+      };
+    default:
+      return null;
+  }
 }
 
-function getModelPath(): string {
-  return join(MODEL_FOLDER, `ggml-${WHISPER_MODEL}.bin`);
+const SUPPORTED_PLATFORMS = ["linux-x64", "linux-arm64", "darwin-arm64", "darwin-x64", "win32-x64"] as const;
+
+type LineSink = (message: string) => void;
+
+const SILENT: LineSink = () => {};
+
+let pendingWarmup: Promise<void> | null = null;
+
+// ---------------------------------------------------------------------------
+// Path helpers — derived from CFG, kept as tiny functions so the platform
+// suffix lives in exactly one place.
+// ---------------------------------------------------------------------------
+
+function binaryPath(): string {
+  return join(CFG.bin, process.platform === "win32" ? "whisper-cli.exe" : "whisper-cli");
 }
 
-async function fileExists(path: string): Promise<boolean> {
+function modelPath(): string {
+  return join(CFG.models, CFG.modelFileName);
+}
+
+async function pathExists(p: string): Promise<boolean> {
   try {
-    await access(path);
+    await access(p);
     return true;
   } catch {
     return false;
   }
 }
 
-async function findExecutable(dir: string, names: string[]): Promise<string | null> {
+// Iterative DFS for the whisper executable. The extracted tarball layout
+// varies between the Homebrew bottle (nested under Cellar/...), the dscripka
+// release (flat), and the ggml-org release (inside a build/ dir).
+async function findTool(root: string, candidates: string[]): Promise<string | null> {
   const suffix = process.platform === "win32" ? ".exe" : "";
-  const targets = names.flatMap((n) => (suffix ? [n + suffix, n] : [n]));
+  const wanted = new Set<string>();
+  for (const c of candidates) {
+    wanted.add(c + suffix);
+    if (suffix) wanted.add(c);
+  }
 
-  async function search(current: string): Promise<string | null> {
+  const stack: string[] = [root];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
     let entries;
     try {
-      entries = await readdir(current, { withFileTypes: true });
+      entries = await readdir(cur, { withFileTypes: true });
     } catch {
-      return null;
+      continue;
     }
-    for (const entry of entries) {
-      const fullPath = join(current, entry.name);
-      if (entry.isFile() && targets.includes(entry.name)) return fullPath;
-      if (entry.isDirectory()) {
-        const found = await search(fullPath);
-        if (found) return found;
+    for (const e of entries) {
+      const full = join(cur, e.name);
+      if (e.isDirectory()) {
+        stack.push(full);
+      } else if (e.isFile() && wanted.has(e.name)) {
+        return full;
       }
     }
-    return null;
   }
-
-  return search(dir);
+  return null;
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+function prettySize(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)}KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-async function downloadFile(url: string, destPath: string, headers?: Record<string, string>): Promise<void> {
-  const tmpPath = destPath + ".tmp";
-  let existingBytes = 0;
+// ---------------------------------------------------------------------------
+// Resumable downloader. Keeps a `.tmp` sidecar until the transfer succeeds
+// so a crash mid-way does not leave a half-written final file.
+// ---------------------------------------------------------------------------
 
-  try {
-    existingBytes = (await stat(tmpPath)).size;
-  } catch {}
+interface FetchOpts {
+  url: string;
+  target: string;
+  headers?: Record<string, string>;
+}
 
-  const reqHeaders: Record<string, string> = { ...headers };
-  if (existingBytes > 0) {
-    reqHeaders["Range"] = `bytes=${existingBytes}-`;
-    console.log(`whisper: resuming download from ${formatBytes(existingBytes)}`);
+async function fetchWithResume({ url, target, headers }: FetchOpts): Promise<void> {
+  const scratch = `${target}.tmp`;
+
+  let offset = await stat(scratch).then((s) => s.size).catch(() => 0);
+  const outboundHeaders: Record<string, string> = { ...(headers ?? {}) };
+  if (offset > 0) {
+    outboundHeaders["Range"] = `bytes=${offset}-`;
+    console.log(`whisper: resuming download from ${prettySize(offset)}`);
   }
 
-  const response = await fetch(url, { redirect: "follow", headers: reqHeaders });
-
-  const isResume = response.status === 206 && existingBytes > 0;
-  if (!isResume && !response.ok) {
-    throw new Error(`Download failed (${response.status}): ${url}`);
+  const res = await fetch(url, { redirect: "follow", headers: outboundHeaders });
+  const resuming = offset > 0 && res.status === 206;
+  if (!resuming && !res.ok) {
+    throw new Error(`Download failed (${res.status}): ${url}`);
   }
 
-  // If server ignored Range and sent full file, start over
-  if (existingBytes > 0 && response.status === 200) {
-    existingBytes = 0;
-    await rm(tmpPath, { force: true });
+  // Server returned the whole thing despite our Range header — wipe progress.
+  if (offset > 0 && res.status === 200) {
+    await rm(scratch, { force: true });
+    offset = 0;
   }
 
-  const contentLength = Number(response.headers.get("content-length") || 0);
-  const totalSize = isResume ? existingBytes + contentLength : contentLength;
-  const body = response.body;
+  const body = res.body;
   if (!body) throw new Error("No response body");
 
-  // Stream to file with progress, appending if resuming
-  const fh = await open(tmpPath, isResume ? "a" : "w");
-  let received = isResume ? existingBytes : 0;
-  let lastLog = Date.now();
+  const declaredLen = Number(res.headers.get("content-length") || 0);
+  const grandTotal = resuming ? offset + declaredLen : declaredLen;
 
+  const fh = await open(scratch, resuming ? "a" : "w");
+  let written = resuming ? offset : 0;
+  let lastTick = Date.now();
   try {
     for await (const chunk of body) {
       await fh.write(new Uint8Array(chunk));
-      received += chunk.byteLength;
-      if (totalSize > 0 && Date.now() - lastLog > 2000) {
-        const pct = Math.round((received / totalSize) * 100);
-        console.log(`whisper: downloading ${formatBytes(received)} / ${formatBytes(totalSize)} (${pct}%)`);
-        lastLog = Date.now();
+      written += chunk.byteLength;
+      const now = Date.now();
+      if (grandTotal > 0 && now - lastTick > 2000) {
+        const pct = Math.round((written / grandTotal) * 100);
+        console.log(
+          `whisper: downloading ${prettySize(written)} / ${prettySize(grandTotal)} (${pct}%)`
+        );
+        lastTick = now;
       }
     }
   } finally {
     await fh.close();
   }
 
-  await rename(tmpPath, destPath);
+  await rename(scratch, target);
 }
 
-async function downloadAndExtractBinary(): Promise<void> {
-  const platformKey = `${process.platform}-${process.arch}`;
-  const source = BINARY_SOURCES[platformKey];
+// ---------------------------------------------------------------------------
+// Binary provisioning: download archive -> extract -> scoop up whisper-cli
+// and any sibling .so/.dylib libraries -> chmod. Collapsed into one
+// orchestrator rather than spread across three helpers.
+// ---------------------------------------------------------------------------
+
+async function installBinary(): Promise<void> {
+  const key = `${process.platform}-${process.arch}`;
+  const source = pickBinarySource(process.platform, process.arch);
   if (!source) {
     throw new Error(
-      `No pre-built whisper binary for ${platformKey}. Supported: ${Object.keys(BINARY_SOURCES).join(", ")}`
+      `No pre-built whisper binary for ${key}. Supported: ${SUPPORTED_PLATFORMS.join(", ")}`
     );
   }
 
-  const extractDir = join(TMP_FOLDER, "extract");
-  await rm(extractDir, { recursive: true, force: true });
-  await mkdir(extractDir, { recursive: true });
-  await mkdir(BIN_DIR, { recursive: true });
-  await mkdir(LIB_DIR, { recursive: true });
+  const unpackDir = join(CFG.scratch, "extract");
+  await rm(unpackDir, { recursive: true, force: true });
+  await Promise.all([
+    mkdir(unpackDir, { recursive: true }),
+    mkdir(CFG.bin, { recursive: true }),
+    mkdir(CFG.lib, { recursive: true }),
+  ]);
 
-  const archiveExt = source.format === "tar.gz" ? "tar.gz" : "zip";
-  const archivePath = join(TMP_FOLDER, `whisper-bin.${archiveExt}`);
-
-  console.log(`whisper: downloading binary for ${platformKey}...`);
-  await downloadFile(source.url, archivePath, source.headers);
+  const archiveFile = join(CFG.scratch, `whisper-bin.${source.kind === "tar.gz" ? "tar.gz" : "zip"}`);
+  console.log(`whisper: downloading binary for ${key}...`);
+  await fetchWithResume({ url: source.url, target: archiveFile, headers: source.headers });
 
   console.log("whisper: extracting...");
-  if (source.format === "tar.gz") {
-    const proc = Bun.spawnSync(["tar", "xzf", archivePath, "-C", extractDir]);
-    if (proc.exitCode !== 0) {
-      throw new Error(`Failed to extract tar.gz: ${proc.stderr.toString()}`);
-    }
-  } else {
-    const proc = Bun.spawnSync(["unzip", "-o", archivePath, "-d", extractDir]);
-    if (proc.exitCode !== 0) {
-      throw new Error(`Failed to extract zip: ${proc.stderr.toString()}`);
-    }
+  const extractCmd =
+    source.kind === "tar.gz"
+      ? ["tar", "xzf", archiveFile, "-C", unpackDir]
+      : ["unzip", "-o", archiveFile, "-d", unpackDir];
+  const extractRes = Bun.spawnSync(extractCmd);
+  if (extractRes.exitCode !== 0) {
+    throw new Error(
+      `Failed to extract ${source.kind}: ${extractRes.stderr.toString()}`
+    );
   }
 
-  // Find the whisper binary (could be named whisper-cli or main)
-  const found = await findExecutable(extractDir, ["whisper-cli", "main"]);
-  if (!found) {
+  const exeSource = await findTool(unpackDir, ["whisper-cli", "main"]);
+  if (!exeSource) {
     throw new Error("Could not find whisper-cli or main binary in downloaded archive");
   }
 
-  const destBinary = getWhisperBinaryPath();
-  await Bun.write(destBinary, Bun.file(found));
-  await chmod(destBinary, 0o755);
-
-  // Copy any shared libraries (for Homebrew bottles)
-  const entries = await readdir(extractDir, { withFileTypes: true, recursive: true }).catch(() => []);
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
-    const name = entry.name;
-    if (name.includes("whisper") && (name.endsWith(".so") || name.endsWith(".dylib") || name.match(/\.so\.\d/))) {
-      const parentPath = entry.parentPath ?? "";
-      const srcPath = join(parentPath, name);
-      const destPath = join(LIB_DIR, name);
-      await Bun.write(destPath, Bun.file(srcPath));
-    }
+  const exeDest = binaryPath();
+  await Bun.write(exeDest, Bun.file(exeSource));
+  if (process.platform !== "win32") {
+    await chmod(exeDest, 0o755);
+  } else {
+    // chmod is a no-op on Windows but keep the call to match cross-platform
+    // behaviour where the parent mounts WSL/Cygwin views.
+    await chmod(exeDest, 0o755).catch(() => {});
   }
 
-  // Cleanup
-  await rm(extractDir, { recursive: true, force: true });
-  await rm(archivePath, { force: true });
+  // Homebrew bottles bundle libwhisper + libggml as .dylib; the linux-arm64
+  // mirror does the same with .so. Copy every whisper-named shared lib into
+  // CFG.lib so LD_LIBRARY_PATH picks them up at runtime.
+  const libEntries: Dirent[] = await readdir(unpackDir, {
+    withFileTypes: true,
+    recursive: true,
+  }).catch(() => [] as Dirent[]);
+  for (const entry of libEntries) {
+    if (!entry.isFile()) continue;
+    const name = entry.name;
+    const isSharedLib =
+      name.includes("whisper") &&
+      (name.endsWith(".so") || name.endsWith(".dylib") || /\.so\.\d/.test(name));
+    if (!isSharedLib) continue;
+    const parent = (entry as unknown as { parentPath?: string }).parentPath ?? "";
+    await Bun.write(join(CFG.lib, name), Bun.file(join(parent, name)));
+  }
+
+  await Promise.all([
+    rm(unpackDir, { recursive: true, force: true }),
+    rm(archiveFile, { force: true }),
+  ]);
   console.log("whisper: binary ready");
 }
 
-async function downloadModel(): Promise<void> {
-  const modelPath = getModelPath();
-  if (await fileExists(modelPath)) return;
-
-  await mkdir(MODEL_FOLDER, { recursive: true });
-  console.log(`whisper: downloading model ${WHISPER_MODEL}...`);
-  await downloadFile(MODEL_URL, modelPath);
+async function installModel(): Promise<void> {
+  const dest = modelPath();
+  if (await pathExists(dest)) return;
+  await mkdir(CFG.models, { recursive: true });
+  console.log(`whisper: downloading model ${CFG.modelName}...`);
+  await fetchWithResume({ url: CFG.modelUrl, target: dest });
   console.log("whisper: model ready");
 }
 
-async function prepareWhisperAssets(printOutput: boolean): Promise<void> {
-  const startedAt = Date.now();
-  console.log(`whisper warmup: start root=${WHISPER_ROOT} model=${WHISPER_MODEL}`);
-  await mkdir(WHISPER_ROOT, { recursive: true });
-  await mkdir(TMP_FOLDER, { recursive: true });
+async function provisionAssets(): Promise<void> {
+  const t0 = Date.now();
+  console.log(`whisper warmup: start root=${CFG.root} model=${CFG.modelName}`);
+  await mkdir(CFG.root, { recursive: true });
+  await mkdir(CFG.scratch, { recursive: true });
 
-  const binaryPath = getWhisperBinaryPath();
-  if (!(await fileExists(binaryPath))) {
-    await downloadAndExtractBinary();
-  } else {
+  if (await pathExists(binaryPath())) {
     console.log("whisper warmup: binary exists");
+  } else {
+    await installBinary();
   }
+  await installModel();
 
-  await downloadModel();
-  console.log(`whisper warmup: complete in ${Date.now() - startedAt}ms`);
+  console.log(`whisper warmup: complete in ${Date.now() - t0}ms`);
 }
 
-function ensureOggDeps(): void {
-  const marker = join(PLUGIN_ROOT, "node_modules", "ogg-opus-decoder");
+// ---------------------------------------------------------------------------
+// ogg->wav bridge. Runs the bundled ogg.mjs script under node because
+// ogg-opus-decoder is distributed as a Node-friendly ESM-wasm hybrid that
+// Bun's own loader chokes on under some release channels.
+// ---------------------------------------------------------------------------
+
+function ensureOggDecoder(): void {
+  const marker = join(CFG.pluginRoot, "node_modules", "ogg-opus-decoder");
   try {
     statSync(marker);
+    return;
   } catch {
-    console.log("whisper: installing ogg-opus-decoder...");
-    const pkgMgr = (() => {
-      try { execSync("bun --version", { stdio: "ignore" }); return "bun"; } catch {}
-      return "npm";
-    })();
-    execSync(`${pkgMgr} install`, { cwd: PLUGIN_ROOT, stdio: "inherit" });
+    // fall through
   }
+  console.log("whisper: installing ogg-opus-decoder...");
+  let pm = "npm";
+  try {
+    execSync("bun --version", { stdio: "ignore" });
+    pm = "bun";
+  } catch {
+    // bun not on PATH — npm is fine.
+  }
+  execSync(`${pm} install`, { cwd: CFG.pluginRoot, stdio: "inherit" });
 }
 
-function decodeOggOpusToWavViaNode(inputPath: string, wavPath: string, log: WhisperDebugLog): void {
-  ensureOggDeps();
-  log(`voice decode: running node converter`);
-  const result = spawnSync("node", [OGG_MJS_CONVERTER, inputPath, wavPath], {
-    encoding: "utf8",
-  });
+function runOggToWav(input: string, wav: string, log: LineSink): void {
+  ensureOggDecoder();
+  log("voice decode: running node converter");
+  const out = spawnSync("node", [CFG.oggBridge, input, wav], { encoding: "utf8" });
+  if (out.status !== 0) {
+    const err = (out.stderr ?? "").trim();
+    const std = (out.stdout ?? "").trim();
+    const suffix = err ? `: ${err}` : std ? `: ${std}` : "";
+    throw new Error(`node decode failed (exit ${out.status ?? "unknown"})${suffix}`);
+  }
+  const stderr = (out.stderr ?? "").trim();
+  if (stderr) log(`voice decode(node): ${stderr}`);
+  log("voice decode: node converter completed");
+}
 
-  if (result.status !== 0) {
-    const stderr = result.stderr?.trim() || "";
-    const stdout = result.stdout?.trim() || "";
+async function prepWav(input: string, log: LineSink): Promise<string> {
+  const ext = extname(input).toLowerCase();
+  log(`voice input: path=${input} ext=${ext || "(none)"}`);
+  if (ext === ".wav") return input;
+  if (ext !== ".ogg" && ext !== ".oga") {
     throw new Error(
-      `node decode failed (exit ${result.status ?? "unknown"})${stderr ? `: ${stderr}` : stdout ? `: ${stdout}` : ""}`
+      `unsupported audio format "${ext || "(none)"}" without ffmpeg; supported: .oga, .ogg, .wav`
+    );
+  }
+  const wav = join(
+    CFG.scratch,
+    `${basename(input, extname(input))}-${Date.now()}.wav`
+  );
+  runOggToWav(input, wav, log);
+  return wav;
+}
+
+// ---------------------------------------------------------------------------
+// Remote HTTP backend (OpenAI-compatible /v1/audio/transcriptions). Used when
+// settings.stt.baseUrl is set — covered by the test suite.
+// ---------------------------------------------------------------------------
+
+const EXT_TO_MIME: Record<string, string> = {
+  ogg: "audio/ogg",
+  oga: "audio/ogg",
+  wav: "audio/wav",
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  webm: "audio/webm",
+};
+
+async function viaHttpApi(
+  input: string,
+  baseUrl: string,
+  modelName: string,
+  log: LineSink
+): Promise<string> {
+  const model = modelName || "Systran/faster-whisper-large-v3";
+  const endpoint = `${baseUrl}/v1/audio/transcriptions`;
+  log(`voice transcribe: using STT API url=${endpoint} model=${model}`);
+
+  const bytes = await readFile(input);
+  const ext = extname(input).toLowerCase().replace(".", "") || "ogg";
+  const mime = EXT_TO_MIME[ext] ?? "audio/ogg";
+
+  const body = new FormData();
+  body.append("file", new Blob([bytes], { type: mime }), `audio.${ext}`);
+  body.append("model", model);
+
+  const res = await fetch(endpoint, { method: "POST", body });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`STT API error (${res.status}): ${detail}`);
+  }
+  const payload = (await res.json()) as { text?: string };
+  const text = (payload.text ?? "").trim();
+  log(`voice transcribe: API transcript chars=${text.length}`);
+  return text;
+}
+
+// ---------------------------------------------------------------------------
+// Local whisper.cpp backend. Spawns the cached binary, runs it against the
+// GGML model, cleans the stdout, and falls back to a one-shot
+// re-download-and-retry when the binary itself has gone missing.
+// ---------------------------------------------------------------------------
+
+function runWhisper(wav: string): string {
+  const libPathJoin = (existing: string | undefined) =>
+    [CFG.lib, existing].filter(Boolean).join(":");
+
+  const proc = Bun.spawnSync(
+    [binaryPath(), "-m", modelPath(), "-f", wav, "--no-timestamps"],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        LD_LIBRARY_PATH: libPathJoin(process.env.LD_LIBRARY_PATH),
+        DYLD_LIBRARY_PATH: libPathJoin(process.env.DYLD_LIBRARY_PATH),
+      },
+    }
+  );
+
+  if (proc.exitCode !== 0) {
+    const tail = proc.stderr.toString().trim();
+    throw new Error(`whisper transcription failed (exit ${proc.exitCode}): ${tail}`);
+  }
+  return proc.stdout.toString();
+}
+
+function cleanTranscript(raw: string): string {
+  // Drop blank lines + [BLANK_AUDIO] markers, flatten to single-space prose.
+  return raw
+    .replace(/\[BLANK_AUDIO\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function viaLocalBinary(input: string, log: LineSink): Promise<string> {
+  await warmupWhisperAssets();
+  log(`voice transcribe: warmup ready cwd=${process.cwd()} input=${input}`);
+
+  try {
+    const info = await stat(input);
+    log(`voice transcribe: input size=${info.size} bytes`);
+  } catch (err) {
+    log(
+      `voice transcribe: failed to stat input - ${err instanceof Error ? err.message : String(err)}`
     );
   }
 
-  if (result.stderr?.trim()) log(`voice decode(node): ${result.stderr.trim()}`);
-  log(`voice decode: node converter completed`);
-}
+  const wav = await prepWav(input, log);
+  const disposable = wav !== input;
+  log(`voice transcribe: using wav=${wav} cleanup=${disposable}`);
 
-async function ensureWavInput(inputPath: string, log: WhisperDebugLog): Promise<string> {
-  const ext = extname(inputPath).toLowerCase();
-  log(`voice input: path=${inputPath} ext=${ext || "(none)"}`);
-  if (ext === ".wav") return inputPath;
-
-  if (ext !== ".ogg" && ext !== ".oga") {
-    throw new Error(`unsupported audio format "${ext || "(none)"}" without ffmpeg; supported: .oga, .ogg, .wav`);
+  try {
+    let stdout: string;
+    try {
+      stdout = runWhisper(wav);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("ENOENT")) throw err;
+      log("voice transcribe: missing whisper executable, forcing re-download and retry");
+      pendingWarmup = null;
+      await rm(CFG.bin, { recursive: true, force: true });
+      await warmupWhisperAssets();
+      stdout = runWhisper(wav);
+    }
+    const transcript = cleanTranscript(stdout);
+    log(`voice transcribe: transcript chars=${transcript.length}`);
+    return transcript;
+  } finally {
+    if (disposable) {
+      log(`voice transcribe: cleanup wav=${wav}`);
+      await rm(wav, { force: true }).catch(() => {});
+    }
   }
-
-  const wavPath = join(TMP_FOLDER, `${basename(inputPath, extname(inputPath))}-${Date.now()}.wav`);
-  decodeOggOpusToWavViaNode(inputPath, wavPath, log);
-  return wavPath;
 }
+
+// ---------------------------------------------------------------------------
+// Public API — names and shapes frozen by the test suite and callers.
+// ---------------------------------------------------------------------------
 
 export function warmupWhisperAssets(options?: { printOutput?: boolean }): Promise<void> {
   const printOutput = options?.printOutput ?? false;
-  if (!warmupPromise) {
-    console.log(`whisper warmup: creating warmup promise printOutput=${printOutput}`);
-    warmupPromise = prepareWhisperAssets(printOutput).catch((err) => {
-      console.error(`whisper warmup: failed - ${err instanceof Error ? err.message : String(err)}`);
-      warmupPromise = null;
-      throw err;
-    });
-  } else {
+  if (pendingWarmup) {
     console.log("whisper warmup: reusing in-flight warmup promise");
+    return pendingWarmup;
   }
-  return warmupPromise;
-}
-
-async function transcribeViaApi(
-  inputPath: string,
-  baseUrl: string,
-  model: string,
-  log: WhisperDebugLog
-): Promise<string> {
-  const apiModel = model || "Systran/faster-whisper-large-v3";
-  const url = `${baseUrl}/v1/audio/transcriptions`;
-  log(`voice transcribe: using STT API url=${url} model=${apiModel}`);
-
-  const audioBytes = await readFile(inputPath);
-  const ext = extname(inputPath).toLowerCase().replace(".", "") || "ogg";
-  const mimeMap: Record<string, string> = {
-    ogg: "audio/ogg", oga: "audio/ogg", wav: "audio/wav",
-    mp3: "audio/mpeg", m4a: "audio/mp4", webm: "audio/webm",
-  };
-  const mimeType = mimeMap[ext] ?? "audio/ogg";
-
-  const form = new FormData();
-  form.append("file", new Blob([audioBytes], { type: mimeType }), `audio.${ext}`);
-  form.append("model", apiModel);
-
-  const response = await fetch(url, { method: "POST", body: form });
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`STT API error (${response.status}): ${body}`);
-  }
-
-  const data = (await response.json()) as { text?: string };
-  const transcript = (data.text ?? "").trim();
-  log(`voice transcribe: API transcript chars=${transcript.length}`);
-  return transcript;
+  console.log(`whisper warmup: creating warmup promise printOutput=${printOutput}`);
+  pendingWarmup = provisionAssets().catch((err) => {
+    console.error(
+      `whisper warmup: failed - ${err instanceof Error ? err.message : String(err)}`
+    );
+    pendingWarmup = null;
+    throw err;
+  });
+  return pendingWarmup;
 }
 
 export async function transcribeAudioToText(
   inputPath: string,
-  options?: { debug?: boolean; log?: WhisperDebugLog }
+  options?: { debug?: boolean; log?: (message: string) => void }
 ): Promise<string> {
-  const log = options?.debug ? (options?.log ?? console.log) : noopLog;
+  const log: LineSink = options?.debug ? options.log ?? console.log : SILENT;
 
   const stt = getSettings().stt;
   if (stt?.baseUrl) {
-    return transcribeViaApi(inputPath, stt.baseUrl, stt.model, log);
+    return viaHttpApi(inputPath, stt.baseUrl, stt.model, log);
   }
-  await warmupWhisperAssets();
-  log(`voice transcribe: warmup ready cwd=${process.cwd()} input=${inputPath}`);
-  try {
-    const inputStat = await stat(inputPath);
-    log(`voice transcribe: input size=${inputStat.size} bytes`);
-  } catch (err) {
-    log(`voice transcribe: failed to stat input - ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  const wavPath = await ensureWavInput(inputPath, log);
-  const shouldCleanup = wavPath !== inputPath;
-  log(`voice transcribe: using wav=${wavPath} cleanup=${shouldCleanup}`);
-
-  const binaryPath = getWhisperBinaryPath();
-  const modelPath = getModelPath();
-
-  const runTranscription = () => {
-    const proc = Bun.spawnSync(
-      [binaryPath, "-m", modelPath, "-f", wavPath, "--no-timestamps"],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-        env: {
-          ...process.env,
-          LD_LIBRARY_PATH: [LIB_DIR, process.env.LD_LIBRARY_PATH].filter(Boolean).join(":"),
-          DYLD_LIBRARY_PATH: [LIB_DIR, process.env.DYLD_LIBRARY_PATH].filter(Boolean).join(":"),
-        },
-      }
-    );
-
-    if (proc.exitCode !== 0) {
-      const stderr = proc.stderr.toString().trim();
-      throw new Error(`whisper transcription failed (exit ${proc.exitCode}): ${stderr}`);
-    }
-
-    return proc.stdout.toString();
-  };
-
-  try {
-    let rawOutput: string;
-    try {
-      rawOutput = runTranscription();
-    } catch (err) {
-      if (!(err instanceof Error) || !err.message.includes("ENOENT")) throw err;
-      log("voice transcribe: missing whisper executable, forcing re-download and retry");
-      warmupPromise = null;
-      await rm(BIN_DIR, { recursive: true, force: true });
-      await warmupWhisperAssets();
-      rawOutput = runTranscription();
-    }
-
-    const transcript = rawOutput
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && line !== "[BLANK_AUDIO]")
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    log(`voice transcribe: transcript chars=${transcript.length}`);
-    return transcript;
-  } finally {
-    if (shouldCleanup) {
-      log(`voice transcribe: cleanup wav=${wavPath}`);
-      await rm(wavPath, { force: true }).catch(() => {});
-    }
-  }
+  return viaLocalBinary(inputPath, log);
 }
