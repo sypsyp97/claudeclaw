@@ -13,9 +13,12 @@
  */
 
 import type { ChannelPolicy } from "../policy/channel";
+import type { Block } from "./blocks";
 import { readChannelMemory, readCrossSessionMemory, readIdentity, readSoul, readUserMemory } from "./files";
 
 const HERMES_PREFIX = "You are running inside Claude Hermes.";
+const AGENT_MEMORY_HINT =
+  "You have a persistent scratchpad at `.claude/hermes/memory/agent/`. Use the agent-memory API to manage it: `view` to list/read, `create` to write a new file, `strReplace` for surgical edits, `insert` for line insertion, `del` for deletion, and `rename` to move files. View the directory before editing, and assume any write may be interrupted — keep entries small and idempotent.";
 
 export interface ComposeContext {
   channelId?: string;
@@ -31,16 +34,33 @@ export interface ComposeContext {
    * appears in the output.
    */
   projectClaudeMd?: string;
+  /**
+   * Optional labeled blocks (Letta-style). Each block is emitted as a
+   * `<block:NAME>…</block>` layer, sorted alphabetically by name. Blocks
+   * whose content is empty / whitespace-only are dropped. Blocks sit
+   * after USER and before MEMORY/CHANNEL, and survive MEMORY truncation.
+   */
+  blocks?: Block[];
+  /**
+   * When true, append a deterministic hint paragraph after CHANNEL that
+   * points agents at the `.claude/hermes/memory/agent/` scratchpad and
+   * enumerates the six agent-memory ops.
+   */
+  includeAgentMemoryHint?: boolean;
 }
 
 /** Shape of the 5 content layers before join, with MEMORY isolated so we can head-trim it. */
 interface LayerBundle {
   /** Layers that sit before MEMORY and must survive truncation verbatim. */
   stablePrefix: string[];
+  /** Pre-framed `<block:NAME>…</block>` layers, emitted between stablePrefix and MEMORY. Stable under truncation. */
+  blocks: string[];
   /** Sanitized MEMORY body (timestamp markers already stripped). May be empty. */
   memory: string;
   /** Layers that sit after MEMORY (CHANNEL). */
   suffix: string[];
+  /** Optional trailing hint layer (agent-memory hint), emitted after suffix. */
+  trailer: string[];
 }
 
 export async function composeSystemPrompt(ctx: ComposeContext): Promise<string> {
@@ -85,15 +105,36 @@ async function readLayerBundle(ctx: ComposeContext): Promise<LayerBundle> {
     suffix.push(await readChannelMemory(ctx.channelId, ctx.cwd));
   }
 
-  return { stablePrefix, memory, suffix };
+  const blocks = framedBlocks(ctx.blocks);
+
+  const trailer: string[] = [];
+  if (ctx.includeAgentMemoryHint === true) {
+    trailer.push(AGENT_MEMORY_HINT);
+  }
+
+  return { stablePrefix, blocks, memory, suffix, trailer };
+}
+
+/**
+ * Turn the caller's Block[] into pre-framed `<block:NAME>…</block>` strings,
+ * sorted alphabetically by name. Empty / whitespace-only content is dropped
+ * so no phantom block layer appears in the output.
+ */
+function framedBlocks(blocks: Block[] | undefined): string[] {
+  if (!blocks || blocks.length === 0) return [];
+  const kept = blocks.filter((b) => b.content.trim().length > 0);
+  kept.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return kept.map((b) => `<block:${b.name}>\n${b.content}\n</block>`);
 }
 
 function assemble(bundle: LayerBundle, includeHermesPrefix: boolean): string {
   const parts: string[] = [];
   if (includeHermesPrefix) parts.push(HERMES_PREFIX);
   for (const layer of bundle.stablePrefix) parts.push(layer);
+  for (const layer of bundle.blocks) parts.push(layer);
   if (bundle.memory) parts.push(bundle.memory);
   for (const layer of bundle.suffix) parts.push(layer);
+  for (const layer of bundle.trailer) parts.push(layer);
 
   const cleaned = parts.map((l) => l.trim()).filter((l) => l.length > 0);
 

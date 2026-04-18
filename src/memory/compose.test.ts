@@ -214,3 +214,192 @@ describe("composer project CLAUDE.md inclusion", () => {
     expect(out).not.toMatch(/\n\n\n/);
   });
 });
+
+describe("composer blocks option", () => {
+  test("blocks emit in stable alphabetical order with <block:NAME> framing between USER and MEMORY/CHANNEL", async () => {
+    await writeLayer("SOUL.md", "SOUL-body");
+    await writeLayer("IDENTITY.md", "IDENTITY-body");
+    await mem.writeUserMemory("USER-MARKER-CCC");
+    await fs.writeFile(join(memoryDir, "MEMORY.md"), "MEMORY-MARKER-DDD\n", "utf8");
+
+    // Non-alphabetical input order: zzz, aaa, mmm.
+    const blocks = [
+      { name: "zzz", content: "zzz-content", budget: 2048 },
+      { name: "aaa", content: "aaa-content", budget: 2048 },
+      { name: "mmm", content: "mmm-content", budget: 2048 },
+    ];
+
+    const out = await mem.composeSystemPrompt({
+      memoryScope: "user",
+      blocks,
+    } as any);
+
+    // Literal framing for each block.
+    expect(out).toContain("<block:aaa>\naaa-content\n</block>");
+    expect(out).toContain("<block:mmm>\nmmm-content\n</block>");
+    expect(out).toContain("<block:zzz>\nzzz-content\n</block>");
+
+    const userIdx = out.indexOf("USER-MARKER-CCC");
+    const aaaIdx = out.indexOf("<block:aaa>");
+    const mmmIdx = out.indexOf("<block:mmm>");
+    const zzzIdx = out.indexOf("<block:zzz>");
+    const memIdx = out.indexOf("MEMORY-MARKER-DDD");
+
+    // Emitted order is alphabetical regardless of input order.
+    expect(aaaIdx).toBeGreaterThan(userIdx);
+    expect(mmmIdx).toBeGreaterThan(aaaIdx);
+    expect(zzzIdx).toBeGreaterThan(mmmIdx);
+    // All blocks sit after USER and before MEMORY.
+    expect(memIdx).toBeGreaterThan(zzzIdx);
+  });
+
+  test("empty-content blocks are skipped", async () => {
+    await writeLayer("SOUL.md", "S");
+    await writeLayer("IDENTITY.md", "I");
+    await mem.writeUserMemory("U");
+
+    const blocks = [
+      { name: "aaa", content: "real", budget: 2048 },
+      { name: "bbb", content: "", budget: 2048 },
+      { name: "ccc", content: "   ", budget: 2048 },
+    ];
+
+    const out = await mem.composeSystemPrompt({
+      memoryScope: "user",
+      blocks,
+    } as any);
+
+    expect(out).toContain("<block:aaa>");
+    expect(out).not.toContain("<block:bbb>");
+    expect(out).not.toContain("<block:ccc>");
+  });
+
+  test("blocks do not break byte-stable determinism", async () => {
+    await writeLayer("SOUL.md", "SOUL-stable");
+    await writeLayer("IDENTITY.md", "IDENTITY-stable");
+    await mem.writeUserMemory("USER-stable");
+    await fs.writeFile(join(memoryDir, "MEMORY.md"), "MEMORY-stable\n", "utf8");
+    await mem.writeChannelMemory("chanZ", "CHANNEL-stable");
+
+    const blocks = [
+      { name: "persona", content: "persona-body", budget: 4096 },
+      { name: "human", content: "human-body", budget: 2048 },
+    ];
+    const ctx = {
+      channelId: "chanZ",
+      memoryScope: "channel" as const,
+      blocks,
+    };
+
+    const first = await mem.composeSystemPrompt(ctx as any);
+    const second = await mem.composeSystemPrompt(ctx as any);
+    expect(second).toBe(first);
+    expect(first.length).toBeGreaterThan(0);
+  });
+
+  test("omitting blocks keeps legacy output shape", async () => {
+    await writeLayer("SOUL.md", "SOUL-body");
+    await writeLayer("IDENTITY.md", "IDENTITY-body");
+    await mem.writeUserMemory("USER-body");
+    await fs.writeFile(join(memoryDir, "MEMORY.md"), "MEMORY-body\n", "utf8");
+
+    const legacy = await mem.composeSystemPrompt({ memoryScope: "user" });
+    const withEmpty = await mem.composeSystemPrompt({
+      memoryScope: "user",
+      blocks: [],
+    } as any);
+
+    expect(legacy).not.toContain("<block:");
+    expect(withEmpty).not.toContain("<block:");
+    expect(withEmpty).toBe(legacy);
+  });
+
+  test("blocks are head-truncatable when maxBytes is exceeded", async () => {
+    // Tiny stable prefix so MEMORY dominates the budget.
+    await writeLayer("SOUL.md", "S");
+    await writeLayer("IDENTITY.md", "I");
+    await mem.writeUserMemory("U");
+
+    // One large MEMORY entry that will not fit.
+    const memFiller = "M".repeat(400);
+    await mem.appendCrossSessionMemory(`mem-fact-LARGE ${memFiller}`);
+
+    const blocks = [{ name: "persona", content: "PERSONA-BLOCK-CONTENT", budget: 4096 }];
+
+    const out = await mem.composeSystemPrompt({
+      memoryScope: "user",
+      maxBytes: 200,
+      blocks,
+    } as any);
+
+    // MEMORY is trimmed out (head-truncation prefers to drop MEMORY first),
+    // but blocks — being part of the stable prefix — survive.
+    expect(out).toContain("PERSONA-BLOCK-CONTENT");
+    expect(out).not.toContain("mem-fact-LARGE");
+  });
+});
+
+describe("composer agent-memory hint option", () => {
+  test("includeAgentMemoryHint: true appends hint paragraph containing the agent path and all six ops", async () => {
+    await writeLayer("SOUL.md", "SOUL-body");
+    await writeLayer("IDENTITY.md", "IDENTITY-body");
+    await mem.writeUserMemory("USER-body");
+    await fs.writeFile(join(memoryDir, "MEMORY.md"), "MEMORY-MARKER-HINT\n", "utf8");
+
+    const out = await mem.composeSystemPrompt({
+      memoryScope: "user",
+      includeAgentMemoryHint: true,
+    } as any);
+
+    expect(out).toContain(".claude/hermes/memory/agent/");
+    expect(out).toContain("view");
+    expect(out).toContain("create");
+    expect(out).toContain("strReplace");
+    expect(out).toContain("insert");
+    expect(out).toContain("del");
+    expect(out).toContain("rename");
+
+    // The hint sits AFTER the MEMORY layer.
+    const memIdx = out.indexOf("MEMORY-MARKER-HINT");
+    const hintIdx = out.indexOf(".claude/hermes/memory/agent/");
+    expect(memIdx).toBeGreaterThanOrEqual(0);
+    expect(hintIdx).toBeGreaterThan(memIdx);
+  });
+
+  test("omitting hint keeps legacy output shape", async () => {
+    await writeLayer("SOUL.md", "SOUL-body");
+    await writeLayer("IDENTITY.md", "IDENTITY-body");
+    await mem.writeUserMemory("USER-body");
+
+    const out = await mem.composeSystemPrompt({ memoryScope: "user" });
+    expect(out).not.toContain(".claude/hermes/memory/agent/");
+  });
+
+  test("includeAgentMemoryHint: false does not append", async () => {
+    await writeLayer("SOUL.md", "SOUL-body");
+    await writeLayer("IDENTITY.md", "IDENTITY-body");
+    await mem.writeUserMemory("USER-body");
+
+    const out = await mem.composeSystemPrompt({
+      memoryScope: "user",
+      includeAgentMemoryHint: false,
+    } as any);
+    expect(out).not.toContain(".claude/hermes/memory/agent/");
+  });
+
+  test("hint is byte-stable", async () => {
+    await writeLayer("SOUL.md", "SOUL-stable");
+    await writeLayer("IDENTITY.md", "IDENTITY-stable");
+    await mem.writeUserMemory("USER-stable");
+    await fs.writeFile(join(memoryDir, "MEMORY.md"), "MEMORY-stable\n", "utf8");
+
+    const ctx = {
+      memoryScope: "user" as const,
+      includeAgentMemoryHint: true,
+    };
+    const first = await mem.composeSystemPrompt(ctx as any);
+    const second = await mem.composeSystemPrompt(ctx as any);
+    expect(second).toBe(first);
+    expect(first.length).toBeGreaterThan(0);
+  });
+});

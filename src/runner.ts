@@ -26,6 +26,7 @@ import {
   promptsDir,
 } from "./paths";
 import { composeSystemPrompt } from "./memory/compose";
+import { readAllBlocks } from "./memory/blocks";
 import { getSharedDb } from "./state/shared-db";
 import { upsertSession } from "./state/repos/sessions";
 import { appendMessage } from "./state/repos/messages";
@@ -788,14 +789,25 @@ async function execClaude(
     }
   }
 
-  // Runtime memory layer: pulls .claude/hermes/memory/MEMORY.md and any
-  // workspace-scoped channel files through the cache-stable composer. The
-  // composer strips ISO-timestamp markers so the same facts produce the
-  // same appended prompt across turns — Claude's prompt cache stays hot.
+  // Runtime memory layer: pulls .claude/hermes/memory/MEMORY.md, any
+  // workspace-scoped channel files, all Letta-style memory blocks, and a
+  // hint about the agent-memory scratchpad through the cache-stable
+  // composer. The composer strips ISO-timestamp markers and emits blocks +
+  // hint deterministically so the same facts produce the same appended
+  // prompt across turns — Claude's prompt cache stays hot.
   try {
+    let blocks: Awaited<ReturnType<typeof readAllBlocks>> = [];
+    try {
+      blocks = await readAllBlocks(process.cwd());
+    } catch {
+      // Block read failures are non-fatal: compose without them rather than
+      // dropping the whole runtime memory layer.
+    }
     const runtimeMemory = await composeSystemPrompt({
       memoryScope: "workspace",
       cwd: process.cwd(),
+      blocks,
+      includeAgentMemoryHint: true,
     });
     if (runtimeMemory.trim()) appendParts.push(runtimeMemory);
   } catch (e) {

@@ -24,3 +24,4 @@ export {
   type NudgeOptions,
   type TranscriptTurn,
 } from "./nudge";
+export { dispatchAgentMemory, type AgentMemoryOp, type AgentMemoryResult } from "./agent-memory-dispatch";
