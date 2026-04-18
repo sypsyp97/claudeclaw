@@ -134,7 +134,7 @@ The self-evolve cadence (small step, verify-gated, journal-everything) is lifted
 
 The memory layer borrows ideas from several open-source agent-memory projects:
 - **Labeled blocks** with per-slot budgets — [Letta](https://github.com/letta-ai/letta) (formerly MemGPT).
-- **Six-op agent scratchpad protocol** (`view / create / strReplace / insert / del / rename`) — Anthropic's [`memory_20250818`](https://docs.anthropic.com/en/docs/build-with-claude/memory-tool) tool shape.
+- **Six-op agent scratchpad protocol** (`view / create / strReplace / insert / del / rename`) — Anthropic's [`memory_20250818`](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool) tool shape.
 - **Dream-style offline consolidation** (digest, dedupe, invalidate) — [Honcho](https://github.com/plastic-labs/honcho).
 - **`(SKILL.md + description + trajectory)` skill library with FTS retrieval** — [Voyager](https://github.com/MineDojo/Voyager)'s skill library pattern.
 - **Importance · recency · relevance scoring** — the Stanford Generative Agents paper ([Park et al., 2023](https://arxiv.org/abs/2304.03442)).
