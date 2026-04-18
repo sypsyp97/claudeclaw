@@ -2,7 +2,7 @@
  * Agent-writable memory protocol matching Anthropic's `memory_20250818` tool
  * shape. All operations are scoped to:
  *
- *   <cwd>/.claude/hermes/memory/agent/
+ *   <cwd>/memory/agent/
  *
  * Six ops: view, create, strReplace, insert, del, rename. Every path goes
  * through `resolveAgentPath`, which is the single gatekeeper that validates
@@ -19,7 +19,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rename as fsRename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-const AGENT_SUBPATH = [".claude", "hermes", "memory", "agent"];
+const AGENT_SUBPATH = ["memory", "agent"];
 
 export interface ViewDirResult {
   kind: "dir";

@@ -55,7 +55,7 @@ interface Workspace {
 async function makeWorkspace(prefix: string): Promise<Workspace> {
   const rawDir = mkdtempSync(join(tmpdir(), `hermes-dream-sched-${prefix}-`));
   mkdirSync(join(rawDir, ".claude", "hermes", "logs"), { recursive: true });
-  mkdirSync(join(rawDir, ".claude", "hermes", "memory"), { recursive: true });
+  mkdirSync(join(rawDir, "memory"), { recursive: true });
   writeFileSync(join(rawDir, ".claude", "hermes", "settings.json"), JSON.stringify(MIN_SETTINGS, null, 2));
   process.chdir(rawDir);
   const dir = process.cwd();

@@ -1,6 +1,6 @@
 /**
  * Journal — the human-readable side of the evolve loop. Writes a daily
- * markdown journal under `.claude/hermes/memory/journal/<date>.md` and
+ * markdown journal under `<project-root>/memory/journal/<date>.md` and
  * appends structured `evolve.*` events into `learn_events` for machine
  * consumption.
  */

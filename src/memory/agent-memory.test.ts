@@ -13,7 +13,7 @@
  *   rename(oldPath, newPath, cwd?)                  -> void
  *
  * All operations are scoped to:
- *   <cwd>/.claude/hermes/memory/agent/
+ *   <cwd>/memory/agent/
  *
  * Anything that resolves outside that root must throw with a message
  * containing "path" or "invalid".
@@ -33,7 +33,7 @@ let mem: any;
 
 beforeAll(async () => {
   tempRoot = await fs.mkdtemp(join(tmpdir(), "hermes-agent-mem-"));
-  memoryDir = join(tempRoot, ".claude", "hermes", "memory");
+  memoryDir = join(tempRoot, "memory");
   agentDir = join(memoryDir, "agent");
   await fs.mkdir(memoryDir, { recursive: true });
   process.chdir(tempRoot);

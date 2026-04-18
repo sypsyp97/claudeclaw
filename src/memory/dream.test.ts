@@ -89,7 +89,7 @@ interface IsolatedWorkspace {
 async function makeWorkspace(prefix: string): Promise<IsolatedWorkspace> {
   const dir = mkdtempSync(join(tmpdir(), `hermes-dream-${prefix}-`));
   mkdirSync(join(dir, ".claude", "hermes", "logs"), { recursive: true });
-  mkdirSync(join(dir, ".claude", "hermes", "memory"), { recursive: true });
+  mkdirSync(join(dir, "memory"), { recursive: true });
   writeFileSync(join(dir, ".claude", "hermes", "settings.json"), JSON.stringify(MIN_SETTINGS, null, 2));
   process.chdir(dir);
   const db = await shared.getSharedDb();

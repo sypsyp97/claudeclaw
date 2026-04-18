@@ -18,7 +18,7 @@ let mem: typeof import("./index");
 
 beforeAll(async () => {
   tempRoot = await fs.mkdtemp(join(tmpdir(), "hermes-compose-"));
-  memoryDir = join(tempRoot, ".claude", "hermes", "memory");
+  memoryDir = join(tempRoot, "memory");
   await fs.mkdir(memoryDir, { recursive: true });
   process.chdir(tempRoot);
   mem = await import("./index");
@@ -351,7 +351,7 @@ describe("composer agent-memory hint option", () => {
       includeAgentMemoryHint: true,
     } as any);
 
-    expect(out).toContain(".claude/hermes/memory/agent/");
+    expect(out).toContain("memory/agent/");
     expect(out).toContain("view");
     expect(out).toContain("create");
     expect(out).toContain("strReplace");
@@ -361,7 +361,7 @@ describe("composer agent-memory hint option", () => {
 
     // The hint sits AFTER the MEMORY layer.
     const memIdx = out.indexOf("MEMORY-MARKER-HINT");
-    const hintIdx = out.indexOf(".claude/hermes/memory/agent/");
+    const hintIdx = out.indexOf("memory/agent/");
     expect(memIdx).toBeGreaterThanOrEqual(0);
     expect(hintIdx).toBeGreaterThan(memIdx);
   });
@@ -372,7 +372,7 @@ describe("composer agent-memory hint option", () => {
     await mem.writeUserMemory("USER-body");
 
     const out = await mem.composeSystemPrompt({ memoryScope: "user" });
-    expect(out).not.toContain(".claude/hermes/memory/agent/");
+    expect(out).not.toContain("memory/agent/");
   });
 
   test("includeAgentMemoryHint: false does not append", async () => {
@@ -384,7 +384,7 @@ describe("composer agent-memory hint option", () => {
       memoryScope: "user",
       includeAgentMemoryHint: false,
     } as any);
-    expect(out).not.toContain(".claude/hermes/memory/agent/");
+    expect(out).not.toContain("memory/agent/");
   });
 
   test("hint is byte-stable", async () => {

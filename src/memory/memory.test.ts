@@ -9,7 +9,7 @@ let mem: typeof import("./index");
 
 beforeAll(async () => {
   tempRoot = await fs.mkdtemp(join(tmpdir(), "hermes-memory-"));
-  await fs.mkdir(join(tempRoot, ".claude", "hermes", "memory"), { recursive: true });
+  await fs.mkdir(join(tempRoot, "memory"), { recursive: true });
   process.chdir(tempRoot);
   mem = await import("./index");
 });
@@ -53,8 +53,8 @@ describe("memory files", () => {
 
 describe("system prompt composition", () => {
   test("concatenates present layers in SOUL→IDENTITY→USER→MEMORY→CHANNEL order", async () => {
-    await fs.writeFile(join(tempRoot, ".claude", "hermes", "memory", "SOUL.md"), "SOUL-text");
-    await fs.writeFile(join(tempRoot, ".claude", "hermes", "memory", "IDENTITY.md"), "ID-text");
+    await fs.writeFile(join(tempRoot, "memory", "SOUL.md"), "SOUL-text");
+    await fs.writeFile(join(tempRoot, "memory", "IDENTITY.md"), "ID-text");
     await mem.writeUserMemory("USER-text");
     await mem.appendCrossSessionMemory("MEM-fact");
     await mem.writeChannelMemory("CX", "CHANNEL-play");

@@ -40,9 +40,7 @@ async function loadMigrator(): Promise<Migrator> {
       // keep probing
     }
   }
-  throw new Error(
-    "migrateLegacyMemory is not exported from src/memory/files.ts nor src/memory/migrate.ts",
-  );
+  throw new Error("migrateLegacyMemory is not exported from src/memory/files.ts nor src/memory/migrate.ts");
 }
 
 let tmp: string;
@@ -86,9 +84,7 @@ describe("migrateLegacyMemory — branches", () => {
     expect(result.skipped).toEqual([]);
     // `moved` reports relative paths — assert length + contents, not order.
     expect(result.moved.length).toBe(3);
-    const normalized = result.moved
-      .map((p) => p.replace(/\\/g, "/"))
-      .sort();
+    const normalized = result.moved.map((p) => p.replace(/\\/g, "/")).sort();
     expect(normalized).toEqual(["MEMORY.md", "USER.md", "channels/c1.md"]);
   });
 

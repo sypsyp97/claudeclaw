@@ -60,7 +60,10 @@ beforeAll(async () => {
   gitMustSucceed(tmpRepo, ["config", "core.eol", "lf"]);
 
   await writeFile(join(tmpRepo, "README.md"), "# evolve target\n", "utf8");
-  await writeFile(join(tmpRepo, ".gitignore"), ".claude/\n", "utf8");
+  // Ignore hermes operational state. `memory/` is the new project-root memory
+  // dir; the evolve journal writes `<cwd>/memory/journal/<date>.md`, which
+  // would otherwise show up as untracked in the post-run status assertions.
+  await writeFile(join(tmpRepo, ".gitignore"), ".claude/\nmemory/\n", "utf8");
   gitMustSucceed(tmpRepo, ["add", "README.md", ".gitignore"]);
   gitMustSucceed(tmpRepo, ["commit", "-q", "-m", "initial"]);
 

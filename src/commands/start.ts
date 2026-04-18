@@ -1,4 +1,5 @@
 import { mkdir, unlink, writeFile } from "fs/promises";
+import { homedir } from "node:os";
 import { fileURLToPath } from "url";
 import { matchesBetween, nextCronMatch } from "../cron";
 import { claudeDir, projectClaudeSettingsFile, statuslineFile } from "../paths";
@@ -78,7 +79,7 @@ async function runMigrationIfAny(): Promise<void> {
   // `<cwd>/.claude/hermes/daemons.json` for this project. Same best-effort
   // contract as the memory migrator.
   try {
-    const result = await migrateGlobalRegistry();
+    const result = await migrateGlobalRegistry({ home: homedir() });
     if (result.migrated > 0) {
       console.log(
         `[${new Date().toLocaleTimeString()}] Migrated global daemon registry (${result.migrated} entry/entries for this cwd; ${result.remainingGlobal} remain globally).`,

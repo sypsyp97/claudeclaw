@@ -2,7 +2,7 @@
  * Letta-style labeled memory-block primitive.
  *
  * Each block is a tiny, named, budget-capped slot of markdown stored at:
- *   <cwd>/.claude/hermes/memory/blocks/<encoded-name>.md
+ *   <cwd>/memory/blocks/<encoded-name>.md
  *
  * The name → filename mapping is round-trippable so `readAllBlocks` can
  * recover the original block names from disk:

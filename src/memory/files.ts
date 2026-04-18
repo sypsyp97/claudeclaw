@@ -2,7 +2,7 @@
  * Filesystem readers/writers for the layered markdown memory files.
  *
  * Layout:
- *   .claude/hermes/memory/
+ *   <project-root>/memory/
  *     SOUL.md            — long-lived agent identity (human-edited)
  *     IDENTITY.md        — workspace identity / tone
  *     USER.md            — facts about the human owner
@@ -14,7 +14,7 @@
  */
 
 import { mkdir, readdir, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, type Dirent } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import {
   channelMemoryFile,
@@ -100,9 +100,7 @@ async function writeWithMkdir(path: string, content: string): Promise<void> {
  * Uses only `fs/promises` (no Bun-only APIs) so it can be imported from tests
  * that stub `process.cwd()` via chdir into a tmpdir.
  */
-export async function migrateLegacyMemory(
-  cwd?: string,
-): Promise<{ moved: string[]; skipped: string[] }> {
+export async function migrateLegacyMemory(cwd?: string): Promise<{ moved: string[]; skipped: string[] }> {
   const legacyRoot = legacyMemoryDir(cwd);
   const newRoot = memoryDir(cwd);
 
@@ -139,7 +137,7 @@ export async function migrateLegacyMemory(
 async function collectFiles(root: string): Promise<string[]> {
   const out: string[] = [];
   async function walk(dir: string) {
-    let entries;
+    let entries: Dirent[];
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {
@@ -163,9 +161,9 @@ async function walkAndMove(
   legacyRoot: string,
   newRoot: string,
   moved: string[],
-  skipped: string[],
+  skipped: string[]
 ): Promise<void> {
-  let entries;
+  let entries: Dirent[];
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch {
@@ -202,7 +200,7 @@ async function walkAndMove(
 }
 
 async function pruneEmptyDirs(root: string): Promise<void> {
-  let entries;
+  let entries: Dirent[];
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch {

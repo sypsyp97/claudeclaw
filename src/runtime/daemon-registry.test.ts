@@ -4,7 +4,13 @@ import * as fsPromises from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type DaemonEntry, defaultRegistryPath, listDaemons, registerDaemon, unregisterDaemon } from "./daemon-registry";
+import {
+  type DaemonEntry,
+  defaultRegistryPath,
+  listDaemons,
+  registerDaemon,
+  unregisterDaemon,
+} from "./daemon-registry";
 import * as registry from "./daemon-registry";
 
 let dir: string;
@@ -267,9 +273,7 @@ describe("daemon-registry — project-local registry path", () => {
   // daemon list and Windows never needs to trust `homedir()`.
   test("defaultRegistryPath(cwd) is rooted under the given cwd", () => {
     const projRoot = join(dir, "projA");
-    expect(defaultRegistryPath(projRoot)).toBe(
-      join(projRoot, ".claude", "hermes", "daemons.json"),
-    );
+    expect(defaultRegistryPath(projRoot)).toBe(join(projRoot, ".claude", "hermes", "daemons.json"));
   });
 
   test("defaultRegistryPath() with no arg falls back to process.cwd()", () => {
@@ -286,6 +290,8 @@ describe("daemon-registry — project-local registry path", () => {
     // Read the production source as a string and assert homedir/node:os
     // are not imported. The spec explicitly forbids the homedir import so
     // the registry can't silently drift back to a global path on refactor.
+    // `migrateGlobalRegistry` takes `home` as a required parameter — the
+    // caller in start.ts passes `homedir()` explicitly.
     const src = await readFile(join(import.meta.dir, "daemon-registry.ts"), "utf8");
     expect(src.includes("node:os")).toBe(false);
     expect(/\bhomedir\b/.test(src)).toBe(false);
@@ -330,7 +336,7 @@ describe("daemon-registry — migrateGlobalRegistry", () => {
           { pid: 1002, cwd, startedAt: "2025-01-01T01:00:00Z" },
         ],
       }),
-      "utf8",
+      "utf8"
     );
 
     const result = await registry.migrateGlobalRegistry({ home, cwd });
@@ -362,7 +368,7 @@ describe("daemon-registry — migrateGlobalRegistry", () => {
           { pid: 1003, cwd, startedAt: "2025-01-01T02:00:00Z" },
         ],
       }),
-      "utf8",
+      "utf8"
     );
 
     const result = await registry.migrateGlobalRegistry({ home, cwd });
@@ -395,7 +401,7 @@ describe("daemon-registry — migrateGlobalRegistry", () => {
       JSON.stringify({
         daemons: [{ pid: 1001, cwd, startedAt: "2025-01-01T00:00:00Z" }],
       }),
-      "utf8",
+      "utf8"
     );
 
     const first = await registry.migrateGlobalRegistry({ home, cwd });

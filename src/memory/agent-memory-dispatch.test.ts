@@ -70,7 +70,7 @@ beforeEach(async () => {
   // Ensure the parent memory dir exists; the agent root itself is created on
   // demand by mutators, which matches the module's read-side empty-dir
   // semantics.
-  await fs.mkdir(join(workspace, ".claude", "hermes", "memory"), { recursive: true });
+  await fs.mkdir(join(workspace, "memory"), { recursive: true });
 });
 
 afterEach(async () => {

@@ -11,7 +11,7 @@
  *   blockBudget(name)              -> number
  *
  * Storage: one markdown file per block in
- *   <cwd>/.claude/hermes/memory/blocks/<safe-name>.md
+ *   <cwd>/memory/blocks/<safe-name>.md
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
@@ -28,7 +28,7 @@ let blocks: any;
 
 beforeAll(async () => {
   tempRoot = await fs.mkdtemp(join(tmpdir(), "hermes-blocks-"));
-  memoryDir = join(tempRoot, ".claude", "hermes", "memory");
+  memoryDir = join(tempRoot, "memory");
   blocksDir = join(memoryDir, "blocks");
   await fs.mkdir(memoryDir, { recursive: true });
   process.chdir(tempRoot);

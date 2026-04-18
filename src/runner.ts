@@ -806,7 +806,7 @@ async function execClaude(
     }
   }
 
-  // Runtime memory layer: pulls .claude/hermes/memory/MEMORY.md, any
+  // Runtime memory layer: pulls <project-root>/memory/MEMORY.md, any
   // workspace-scoped channel files, all Letta-style memory blocks, and a
   // hint about the agent-memory scratchpad through the cache-stable
   // composer. The composer strips ISO-timestamp markers and emits blocks +

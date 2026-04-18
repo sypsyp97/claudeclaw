@@ -18,7 +18,7 @@ import { readChannelMemory, readCrossSessionMemory, readIdentity, readSoul, read
 
 const HERMES_PREFIX = "You are running inside Claude Hermes.";
 const AGENT_MEMORY_HINT =
-  "You have a persistent scratchpad at `.claude/hermes/memory/agent/`. Use the agent-memory API to manage it: `view` to list/read, `create` to write a new file, `strReplace` for surgical edits, `insert` for line insertion, `del` for deletion, and `rename` to move files. View the directory before editing, and assume any write may be interrupted — keep entries small and idempotent.";
+  "You have a persistent scratchpad at `memory/agent/` in the project root. Use the agent-memory API to manage it: `view` to list/read, `create` to write a new file, `strReplace` for surgical edits, `insert` for line insertion, `del` for deletion, and `rename` to move files. View the directory before editing, and assume any write may be interrupted — keep entries small and idempotent.";
 
 export interface ComposeContext {
   channelId?: string;
@@ -43,7 +43,7 @@ export interface ComposeContext {
   blocks?: Block[];
   /**
    * When true, append a deterministic hint paragraph after CHANNEL that
-   * points agents at the `.claude/hermes/memory/agent/` scratchpad and
+   * points agents at the `<project-root>/memory/agent/` scratchpad and
    * enumerates the six agent-memory ops.
    */
   includeAgentMemoryHint?: boolean;

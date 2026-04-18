@@ -142,16 +142,16 @@ async function writeEntries(path: string, entries: DaemonEntry[]): Promise<void>
  *   unlinked entirely if nothing remains.
  * - Idempotent: running it a second time on a clean state is a no-op.
  *
- * This is the only place in this module that reaches into `~/.claude/` —
- * the core path logic above no longer depends on `homedir()`.
+ * Caller must supply `home` explicitly — this module has zero reach into
+ * the OS home directory, so the registry can never silently drift back
+ * to a global path. `start.ts` injects the home path on boot; tests pass
+ * a tmpdir.
  */
-export async function migrateGlobalRegistry(opts: { home?: string; cwd?: string } = {}): Promise<{
+export async function migrateGlobalRegistry(opts: { home: string; cwd?: string }): Promise<{
   migrated: number;
   remainingGlobal: number;
 }> {
-  // Lazy import: keep the top-level module homedir-free.
-  const { homedir } = await import("node:os");
-  const home = opts.home ?? homedir();
+  const home = opts.home;
   const cwd = opts.cwd ?? process.cwd();
 
   const globalPath = join(home, ".claude", "hermes", "daemons.json");
