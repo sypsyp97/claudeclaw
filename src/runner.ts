@@ -31,6 +31,8 @@ import { getSharedDb } from "./state/shared-db";
 import { upsertSession } from "./state/repos/sessions";
 import { appendMessage } from "./state/repos/messages";
 import { captureCandidateSkill } from "./learning/completion-hook";
+import { createToolCollector } from "./learning/tool-collector";
+import type { TrajectoryToolCall } from "./learning/closed-loop";
 
 // These are anchored to the hermes installation (via import.meta.dir), not the
 // project's cwd, so they are safe to freeze at module load.
@@ -293,6 +295,7 @@ async function runClaudeOnceStreaming(
   exitCode: number;
   sessionId?: string;
   finalResult?: string;
+  toolCalls?: TrajectoryToolCall[];
 }> {
   const args = [...baseArgs, "--output-format", "stream-json", "--verbose"];
   const normalizedModel = model.trim().toLowerCase();
@@ -305,6 +308,8 @@ async function runClaudeOnceStreaming(
     stderr: "pipe",
     env: buildChildEnv(baseEnv, model, api),
   });
+
+  const collector = createToolCollector();
 
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -330,6 +335,10 @@ async function runClaudeOnceStreaming(
       } else if (event.kind === "error") {
         errorShort = event.message;
       }
+      // Collect tool-use trajectory OUTSIDE the sink try/catch: a sink throw
+      // must never skip collection, since the learning loop relies on this
+      // list for SKILL.md bodies.
+      collector.handleEvent(event);
       try {
         await sink.update(event);
       } catch {
@@ -382,7 +391,8 @@ async function runClaudeOnceStreaming(
       exitCode: number;
       sessionId?: string;
       finalResult?: string;
-    } = { rawStdout, stderr, exitCode };
+      toolCalls?: TrajectoryToolCall[];
+    } = { rawStdout, stderr, exitCode, toolCalls: collector.toolCalls() };
     if (sessionId !== undefined) out.sessionId = sessionId;
     if (finalResult !== undefined) out.finalResult = finalResult;
     return out;
@@ -396,7 +406,12 @@ async function runClaudeOnceStreaming(
     } catch {
       // swallow
     }
-    return { rawStdout: "", stderr: message, exitCode: 124 };
+    return {
+      rawStdout: "",
+      stderr: message,
+      exitCode: 124,
+      toolCalls: collector.toolCalls(),
+    };
   } finally {
     if (timeoutHandle) clearTimeout(timeoutHandle);
   }
@@ -830,6 +845,7 @@ async function execClaude(
     exitCode: number;
     sessionId?: string;
     finalResult?: string;
+    toolCalls?: TrajectoryToolCall[];
   } = sink
     ? await runClaudeOnceStreaming(
         args,
@@ -942,7 +958,7 @@ async function execClaude(
       void (async () => {
         try {
           await captureCandidateSkill(
-            { prompt, reply: stdout, tools: [], cwd: process.cwd() },
+            { prompt, reply: stdout, tools: exec.toolCalls ?? [], cwd: process.cwd() },
             { captureCandidateSkills: true },
           );
         } catch {
