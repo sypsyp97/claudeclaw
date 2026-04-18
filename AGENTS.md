@@ -32,6 +32,16 @@ the human log.
 **Faster inner loop:** `bun run verify:fast` runs only typecheck + unit
 (~8 s). Use this between edits; run full verify before every push.
 
+## Cutting a release
+
+`bun run release <version>` — bumps `.claude-plugin/plugin.json`,
+`.claude-plugin/marketplace.json` (plugins[0].version), and `package.json`
+in one shot, then runs verify, commits, tags `v<version>`, pushes main + tag,
+and creates a GitHub release. Flags: `--dry-run`, `--no-push`, `--no-release`,
+`--notes-file=<path>`. The `plugin.json` version is what Claude Code's plugin
+loader uses to invalidate its cache — old users only see updates when it
+bumps.
+
 ## Test conventions
 
 - Unit tests live next to their source: `foo.ts` → `foo.test.ts`.

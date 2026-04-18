@@ -17,7 +17,8 @@
     "test:smoke": "bun test tests/smoke",
     "test:integration": "bun test tests/integration",
     "verify": "bun run scripts/verify.ts",
-    "verify:fast": "bun run scripts/verify.ts --fast"
+    "verify:fast": "bun run scripts/verify.ts --fast",
+    "release": "bun run scripts/release.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
