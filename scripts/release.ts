@@ -82,7 +82,8 @@ function flag(name: string, args: string[]): string | true | undefined {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const version = args.find((a) => !a.startsWith("--"));
-  if (!version) die("usage: bun run release <version> [--dry-run] [--no-push] [--no-release] [--notes-file=path]");
+  if (!version)
+    die("usage: bun run release <version> [--dry-run] [--no-push] [--no-release] [--notes-file=path]");
   if (!SEMVER.test(version)) die(`not a valid semver: ${version}`);
 
   const dryRun = flag("--dry-run", args) === true;
@@ -132,7 +133,9 @@ async function main(): Promise<void> {
     for (const f of files) console.log(`  ${f.path} (${f.selector}: ${f.current} → ${version})`);
     console.log(`[release] --dry-run: would commit "Release v${version}", tag v${version}`);
     console.log(`[release] --dry-run: would push main + tag${noPush ? " (skipped)" : ""}`);
-    console.log(`[release] --dry-run: would create release${noRelease ? " (skipped)" : ""} with notes:\n---\n${notes}---`);
+    console.log(
+      `[release] --dry-run: would create release${noRelease ? " (skipped)" : ""} with notes:\n---\n${notes}---`
+    );
     return;
   }
 
