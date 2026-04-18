@@ -15,6 +15,7 @@ import { projectSlugFromCwd } from "../runtime/claude-paths";
 import { createDiscordStatusSink, type DiscordTransport } from "../status/sinks/discord";
 import { DISCORD_API, discordApi } from "./discord-api";
 import { buildSlashCommandList } from "./slash-commands";
+import { classifyThreadIntent } from "./discord-intent";
 
 // --- Discord API constants ---
 
@@ -275,61 +276,6 @@ function guildTriggerReason(message: DiscordMessage): string | null {
 
 // --- Attachment handling ---
 
-// --- AI-powered thread intent classifier (uses Sonnet via Claude OAuth) ---
-interface ThreadIntent {
-  action: "hire" | "fire";
-  names: string[];
-}
-
-async function classifyThreadIntent(text: string): Promise<ThreadIntent | null> {
-  const systemPrompt = `You classify user messages into thread management intents.
-
-If the user wants to CREATE/SPAWN/DEPLOY threads (e.g. "hire X", "派出 X", "叫 X 出來", "派 X 去打", "開 X", "建立 X"):
-Return: {"action":"hire","names":["name1","name2"]}
-
-If the user wants to DELETE/REMOVE threads (e.g. "fire X", "撤回 X", "把 X 叫回來", "刪 X", "關 X"):
-Return: {"action":"fire","names":["name1","name2"]}
-
-If the message is NOT about thread management, return: null
-
-Rules:
-- Extract individual names. "桃園三結義" = ["劉備","關羽","張飛"]. "五虎將" = ["關羽","張飛","趙雲","馬超","黃忠"].
-- Common patterns: 派/派出/出征/上陣/迎戰/出戰 = hire. 撤/撤回/收回/叫回來/滾 = fire.
-- Return ONLY valid JSON or the word null. No explanation.`;
-
-  try {
-    const { execFileSync } = await import("node:child_process");
-    const { claudeArgv } = await import("../runtime/claude-cli");
-    const input = `${systemPrompt}\n\n---\nUser message: ${text}`;
-    const [bin, ...prefixArgs] = claudeArgv();
-    const cliArgs = [
-      ...prefixArgs,
-      "--model",
-      "claude-sonnet-4-20250514",
-      "--print",
-      "--output-format",
-      "text",
-    ];
-    const result = execFileSync(bin, cliArgs, {
-      input,
-      encoding: "utf-8",
-      timeout: 15000,
-      env: { ...process.env, HOME: homedir() },
-    }).trim();
-
-    if (!result || result === "null") return null;
-    // Extract JSON from response (in case there's extra text)
-    const jsonMatch = result.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
-    return JSON.parse(jsonMatch[0]) as ThreadIntent;
-  } catch (err) {
-    console.error(`[Discord] Intent classifier error: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
-}
-
-// --- Attachment handling (original) ---
-
 function isImageAttachment(a: DiscordAttachment): boolean {
   return Boolean(a.content_type?.startsWith("image/"));
 }
@@ -516,9 +462,9 @@ async function handleMessageCreate(token: string, message: DiscordMessage): Prom
       }
     }
 
-    // --- Thread management: AI-powered intent classification ---
+    // --- Thread management: pattern-based intent classification ---
     if (isGuild && cleanContent.length < 200) {
-      const intent = await classifyThreadIntent(cleanContent);
+      const intent = classifyThreadIntent(cleanContent);
       if (intent && intent.action === "hire" && intent.names.length > 0) {
         const results: string[] = [];
         for (const threadName of intent.names) {
