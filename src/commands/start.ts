@@ -25,6 +25,7 @@ import {
 import { type StateData, writeState } from "../statusline";
 import { createJobStatusSink } from "../status/job-sink";
 import { maybeRunDream } from "../memory/dream-scheduler";
+import { syncActiveSkills } from "../skills/bridge";
 import { getSharedDb } from "../state/shared-db";
 import { getDayAndMinuteAtOffset } from "../timezone";
 import {
@@ -379,6 +380,22 @@ export async function start(args: string[] = []) {
   }
 
   const jobs = await loadJobs();
+
+  // One-shot skill-bridge sync on startup so any `active` Voyager skills are
+  // mirrored into `.claude/skills/hermes_*` before the daemon enters the hot
+  // loop. `syncActiveSkills` is no-throw by contract; the try/catch is
+  // belt-and-suspenders.
+  try {
+    const db = await getSharedDb();
+    const result = await syncActiveSkills(db, process.cwd());
+    if (result.mirrored.length || result.removed.length || result.errors.length) {
+      console.log(
+        `[${ts()}] skill-bridge: mirrored=${result.mirrored.length} removed=${result.removed.length} errors=${result.errors.length}`,
+      );
+    }
+  } catch (err) {
+    console.error(`[${ts()}] skill-bridge error: ${String(err)}`);
+  }
 
   await setupStatusline();
   await writePidFile();
@@ -758,6 +775,19 @@ export async function start(args: string[] = []) {
         });
       } catch (err) {
         console.error(`[${ts()}] dream-scheduler error: ${String(err)}`);
+      }
+    })();
+    void (async () => {
+      try {
+        const db = await getSharedDb();
+        const result = await syncActiveSkills(db, process.cwd());
+        if (result.mirrored.length || result.removed.length || result.errors.length) {
+          console.log(
+            `[${ts()}] skill-bridge: mirrored=${result.mirrored.length} removed=${result.removed.length} errors=${result.errors.length}`,
+          );
+        }
+      } catch (err) {
+        console.error(`[${ts()}] skill-bridge error: ${String(err)}`);
       }
     })();
     updateState();
