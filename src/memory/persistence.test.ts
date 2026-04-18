@@ -50,10 +50,16 @@ interface Workspace {
  * everything the test needs plus a teardown closure.
  */
 async function makeWorkspace(prefix: string): Promise<Workspace> {
-  const dir = mkdtempSync(join(tmpdir(), `hermes-persist-${prefix}-`));
-  mkdirSync(join(dir, ".claude", "hermes", "logs"), { recursive: true });
-  writeFileSync(join(dir, ".claude", "hermes", "settings.json"), JSON.stringify(MIN_SETTINGS, null, 2));
-  process.chdir(dir);
+  const rawDir = mkdtempSync(join(tmpdir(), `hermes-persist-${prefix}-`));
+  mkdirSync(join(rawDir, ".claude", "hermes", "logs"), { recursive: true });
+  writeFileSync(join(rawDir, ".claude", "hermes", "settings.json"), JSON.stringify(MIN_SETTINGS, null, 2));
+  process.chdir(rawDir);
+  // Use `process.cwd()` as the canonical workspace path so assertions match
+  // whatever `persistTurn` stored. On macOS `os.tmpdir()` returns
+  // `/var/folders/...` but `process.cwd()` after chdir reports the realpath
+  // `/private/var/folders/...` — the symlink resolution would break
+  // `sessionRow.workspace === ws.dir` asserts otherwise.
+  const dir = process.cwd();
   process.env.HERMES_CLAUDE_BIN = `bun run ${FAKE_CLAUDE_ABS}`;
 
   const config = await import("../config");
