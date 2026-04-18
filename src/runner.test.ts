@@ -602,3 +602,27 @@ describe("compactCurrentSession — status sink", () => {
     expect(result.success).toBe(true);
   });
 });
+
+// --- status label must not leak the user's prompt ---
+// Regression: the Discord status sink posts a "Hermes working… — <label>"
+// header. Earlier revisions passed prompt.slice(0, 140) as the label, which
+// echoed the user's own message back into the public status channel. The
+// label must be an internal task identifier, never the prompt body.
+describe("status label — user message must not leak", () => {
+  test("run(name, prompt, ..., sink) passes name (not prompt) to sink.open", async () => {
+    process.env.HERMES_FAKE_SESSION_ID = "label-leak-test";
+    process.env.HERMES_FAKE_REPLY = "ok";
+
+    const { calls, sink } = createRecorderSink();
+    const secretPrompt = "private-user-secret-abc123";
+    const result = await runner.run("discord", secretPrompt, undefined, sink as unknown as undefined);
+    expect(result.exitCode).toBe(0);
+
+    const openCall = calls.find((c) => c.kind === "open");
+    expect(openCall).toBeDefined();
+    const payload = openCall!.payload as { taskId: string; label: string };
+    // The label must be the task identifier ("discord"), not the prompt text.
+    expect(payload.label).toBe("discord");
+    expect(payload.label).not.toContain("private-user-secret-abc123");
+  });
+});

@@ -25,6 +25,10 @@ import {
   projectClaudeMdFile,
   promptsDir,
 } from "./paths";
+import { composeSystemPrompt } from "./memory/compose";
+import { getSharedDb } from "./state/shared-db";
+import { upsertSession } from "./state/repos/sessions";
+import { appendMessage } from "./state/repos/messages";
 
 // These are anchored to the hermes installation (via import.meta.dir), not the
 // project's cwd, so they are safe to freeze at module load.
@@ -79,6 +83,48 @@ const threadQueues = new Map<string, Promise<unknown>>();
 
 function queueKey(threadId: string, source: ThreadSource): string {
   return `${source}:${threadId}`;
+}
+
+/**
+ * Persist a single user→assistant turn to the SQLite messages store.
+ *
+ * Best-effort sidecar: any failure (missing tables, locked DB, etc.) is
+ * logged and swallowed so the Claude reply still reaches the caller.
+ * The session row is upserted so a brand-new session id materialises
+ * a row, and a returning session simply bumps last_used_at.
+ */
+async function persistTurn(opts: {
+  cwd: string;
+  key: string;
+  source: string;
+  scope: string;
+  workspace: string;
+  claudeSessionId: string;
+  userPrompt: string;
+  assistantReply: string;
+}): Promise<void> {
+  try {
+    const db = await getSharedDb(opts.cwd);
+    const sessionRow = upsertSession(db, {
+      key: opts.key,
+      scope: opts.scope,
+      source: opts.source,
+      workspace: opts.workspace,
+      claudeSessionId: opts.claudeSessionId,
+    });
+    appendMessage(db, {
+      sessionId: sessionRow.id,
+      role: "user",
+      content: opts.userPrompt,
+    });
+    appendMessage(db, {
+      sessionId: sessionRow.id,
+      role: "assistant",
+      content: opts.assistantReply,
+    });
+  } catch (e) {
+    console.error(`[${new Date().toLocaleTimeString()}] Failed to persist turn to messages store:`, e);
+  }
 }
 
 function enqueue<T>(fn: () => Promise<T>, threadId?: string, source: ThreadSource = "cli"): Promise<T> {
@@ -742,6 +788,20 @@ async function execClaude(
     }
   }
 
+  // Runtime memory layer: pulls .claude/hermes/memory/MEMORY.md and any
+  // workspace-scoped channel files through the cache-stable composer. The
+  // composer strips ISO-timestamp markers so the same facts produce the
+  // same appended prompt across turns — Claude's prompt cache stays hot.
+  try {
+    const runtimeMemory = await composeSystemPrompt({
+      memoryScope: "workspace",
+      cwd: process.cwd(),
+    });
+    if (runtimeMemory.trim()) appendParts.push(runtimeMemory);
+  } catch (e) {
+    console.error(`[${new Date().toLocaleTimeString()}] Failed to compose runtime memory layer:`, e);
+  }
+
   if (security.level !== "unrestricted") appendParts.push(dirScopePrompt());
   if (appendParts.length > 0) {
     args.push("--append-system-prompt", appendParts.join("\n\n"));
@@ -766,7 +826,7 @@ async function execClaude(
         timeoutMs,
         sink,
         name,
-        prompt.slice(0, 140),
+        name,
       )
     : await runClaudeOnce(args, primaryConfig.model, primaryConfig.api, baseEnv, timeoutMs);
   const primaryRateLimit = extractRateLimitMessage(exec.rawStdout, exec.stderr);
@@ -785,7 +845,7 @@ async function execClaude(
           timeoutMs,
           sink,
           name,
-          prompt.slice(0, 140),
+          name,
         )
       : await runClaudeOnce(args, fallbackConfig.model, fallbackConfig.api, baseEnv, timeoutMs);
     usedFallback = true;
@@ -846,6 +906,25 @@ async function execClaude(
     stderr,
     exitCode,
   };
+
+  // Persist user + assistant turn into the SQLite messages store. Best-effort;
+  // failures here never propagate. Only persist when we have a usable Claude
+  // session id and the run actually succeeded — failed turns shouldn't pollute
+  // the FTS index with empty assistant rows.
+  if (exitCode === 0 && !rateLimitMessage && sessionId && sessionId !== "unknown") {
+    const persistKey = threadId ? queueKey(threadId, source) : sessionId;
+    const persistSource = threadId ? source : "cli";
+    await persistTurn({
+      cwd: process.cwd(),
+      key: persistKey,
+      source: persistSource,
+      scope: "workspace",
+      workspace: process.cwd(),
+      claudeSessionId: sessionId,
+      userPrompt: prompt,
+      assistantReply: stdout,
+    });
+  }
 
   const includeBodies = settings.logging?.includeBodies === true;
   const headerLines = [

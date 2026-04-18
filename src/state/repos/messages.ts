@@ -4,6 +4,7 @@
  * callers pass plain filter objects instead of doing JOINs themselves.
  */
 
+import { heuristicImportance } from "../../memory/scoring";
 import type { Database } from "../db";
 
 export type MessageRole = "user" | "assistant" | "tool" | "system";
@@ -25,14 +26,16 @@ export interface NewMessage {
   content: string;
   toolCalls?: unknown;
   attachments?: unknown;
+  importance?: number;
 }
 
 export function appendMessage(db: Database, input: NewMessage): number {
   const ts = input.ts ?? new Date().toISOString();
+  const importance = input.importance ?? heuristicImportance(input.role, input.content);
   const result = db
     .prepare(
-      `INSERT INTO messages (session_id, ts, role, content, tool_calls_json, attachments_json)
-       VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO messages (session_id, ts, role, content, tool_calls_json, attachments_json, importance)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.sessionId,
@@ -40,7 +43,8 @@ export function appendMessage(db: Database, input: NewMessage): number {
       input.role,
       input.content,
       input.toolCalls === undefined ? null : JSON.stringify(input.toolCalls),
-      input.attachments === undefined ? null : JSON.stringify(input.attachments)
+      input.attachments === undefined ? null : JSON.stringify(input.attachments),
+      importance
     );
   return Number(result.lastInsertRowid);
 }

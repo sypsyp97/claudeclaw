@@ -13,6 +13,7 @@ import { spawn } from "node:child_process";
 import { claudeArgv } from "../runtime/claude-cli";
 import { runClaudeStreaming } from "../runtime/claude-stream";
 import type { StatusSink } from "../status/sink";
+import { buildEvolveSystemPrompt } from "./guards";
 
 export interface ExecuteOptions {
   prompt: string;
@@ -49,9 +50,9 @@ export async function executeSelfEdit(opts: ExecuteOptions): Promise<ExecuteResu
   const timeoutMs = opts.timeoutMs ?? 15 * 60_000;
   const [bin, ...prefix] = claudeArgv({ override: opts.claudeBin });
   const args = [...prefix, "-p", opts.prompt, "--output-format", "text"];
-  if (opts.systemPrompt) {
-    args.push("--append-system-prompt", opts.systemPrompt);
-  }
+  // Always prepend the evolve safety guards. This is a hard invariant —
+  // the guards reach Claude before any caller-supplied system prompt.
+  args.push("--append-system-prompt", buildEvolveSystemPrompt(opts.systemPrompt));
 
   const killEscalationMs = opts.killEscalationMs ?? DEFAULT_KILL_ESCALATION_MS;
 
@@ -104,7 +105,9 @@ export async function executeSelfEdit(opts: ExecuteOptions): Promise<ExecuteResu
 
 async function runStreamingExec(opts: ExecuteOptions): Promise<ExecuteResult> {
   const args: string[] = ["-p", opts.prompt];
-  if (opts.systemPrompt) args.push("--append-system-prompt", opts.systemPrompt);
+  // Always prepend the evolve safety guards, same invariant as the
+  // non-streaming path.
+  args.push("--append-system-prompt", buildEvolveSystemPrompt(opts.systemPrompt));
   const streamOpts: Parameters<typeof runClaudeStreaming>[0] = {
     args,
     cwd: opts.cwd,
